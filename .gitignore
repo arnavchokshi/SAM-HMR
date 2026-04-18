@@ -22,6 +22,7 @@ runs/*
 runs/3d_compare/*
 !runs/3d_compare/_agent_log.md
 !runs/3d_compare/REPORT.md
+!runs/3d_compare/HANDOFF_FOR_NEXT_AGENT.md
 
 # Weights / model checkpoints (large; fetched via scripts/fetch_*.sh)
 weights/
