@@ -89,6 +89,25 @@ def valid_frames_set(tracks: Dict) -> Dict[int, set]:
     return out
 
 
+def resize_palette_canvas(canvas: np.ndarray, *, dst_h: int, dst_w: int) -> np.ndarray:
+    """Nearest-neighbour resize of a palette canvas (pixel == tid).
+
+    Used so SAM-Body4D's mask reshape lines up with frames_full when
+    PHMR's input frames were downscaled to ``max_height=896``. NN
+    interpolation preserves tid values exactly (no blending of adjacent
+    tids); slight aliasing on dancer edges is harmless because
+    SAM-Body4D rebuilds person masks from the palette anyway.
+
+    No-op when ``(dst_h, dst_w)`` already matches the input shape.
+    """
+    h, w = canvas.shape[:2]
+    if (h, w) == (dst_h, dst_w):
+        return canvas
+    import cv2
+    out = cv2.resize(canvas, (dst_w, dst_h), interpolation=cv2.INTER_NEAREST)
+    return out.astype(np.uint8, copy=False)
+
+
 def assemble_palette_canvas(
     tid_to_mask: Dict[int, np.ndarray],
     H: int,
@@ -281,8 +300,18 @@ def _write_palette_pngs(
     n_frames: int,
     H: int,
     W: int,
+    *,
+    output_size: Optional[Tuple[int, int]] = None,
 ) -> None:
-    """Write a palette PNG per frame (pixel value == tid) for SAM-Body4D consumers."""
+    """Write a palette PNG per frame (pixel value == tid) for SAM-Body4D
+    consumers.
+
+    ``output_size`` (default ``None``) optionally upscales each canvas to
+    ``(H_out, W_out)`` via nearest-neighbour so SAM-Body4D's mask
+    reshape against frames_full lines up. Required when PHMR's input
+    frames were downscaled to ``max_height=896`` but body4d reads the
+    full-resolution images.
+    """
     from PIL import Image
 
     out_palette_dir.mkdir(parents=True, exist_ok=True)
@@ -293,6 +322,9 @@ def _write_palette_pngs(
             if tid in valid_frames and frame in valid_frames[tid]
         }
         canvas = assemble_palette_canvas(tid_masks, H, W)
+        if output_size is not None:
+            out_h, out_w = output_size
+            canvas = resize_palette_canvas(canvas, dst_h=out_h, dst_w=out_w)
         img = Image.fromarray(canvas, mode="P")
         img.putpalette(DAVIS_PALETTE)
         img.save(str(out_palette_dir / f"{frame:08d}.png"))
@@ -366,14 +398,30 @@ def main(argv: Optional[list] = None) -> int:
     predictor = _build_predictor(prompthmr_path, sam2_ckpt, sam2_cfg)
     per_frame_per_tid = _propagate_with_predictor(predictor, frames_dir, tracks)
 
+    full_frames_dir = interm / "frames_full"
+    full_size: Optional[Tuple[int, int]] = None
+    full_paths = sorted(full_frames_dir.glob("*.jpg"))
+    if full_paths:
+        H_full, W_full = cv2.imread(str(full_paths[0])).shape[:2]
+        if (H_full, W_full) != (H, W):
+            full_size = (H_full, W_full)
+            print(
+                f"[build_masks] frames_full at {W_full}x{H_full} differs from "
+                f"frames at {W}x{H}; palette PNGs will be NN-upscaled for body4d"
+            )
+
     vf = valid_frames_set(tracks)
     n_per_tid = _write_per_track_pngs(out_per_tid, per_frame_per_tid, vf, n_frames)
-    _write_palette_pngs(out_palette, per_frame_per_tid, vf, n_frames, H, W)
+    _write_palette_pngs(
+        out_palette, per_frame_per_tid, vf, n_frames, H, W,
+        output_size=full_size,
+    )
     union = compute_union(per_frame_per_tid, n_frames, H, W)
     np.save(out_union, union)
     print(
-        f"[build_masks] wrote {n_per_tid} per-tid PNGs, {n_frames} palette PNGs, "
-        f"union shape={tuple(union.shape)} sum={int(union.sum())}"
+        f"[build_masks] wrote {n_per_tid} per-tid PNGs, {n_frames} palette PNGs"
+        + (f" (palette NN-upscaled to {full_size[1]}x{full_size[0]})" if full_size else "")
+        + f", union shape={tuple(union.shape)} sum={int(union.sum())}"
     )
     return 0
 

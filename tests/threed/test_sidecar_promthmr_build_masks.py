@@ -19,6 +19,7 @@ from threed.sidecar_promthmr.build_masks import (
     hydra_absolute_config_name,
     inject_prompthmr_path,
     load_video_frames_bgr,
+    resize_palette_canvas,
     resolve_default_sam2_paths,
     valid_frames_set,
 )
@@ -92,6 +93,39 @@ class TestAssemblePaletteCanvas:
         result = assemble_palette_canvas({}, 3, 3)
         assert result.dtype == np.uint8
         assert (result == 0).all()
+
+
+class TestResizePaletteCanvas:
+    """Nearest-neighbour upscaling so SAM-Body4D's mask reshape matches
+    the frames_full image dimensions when PHMR's input frames were
+    downscaled to max_height=896."""
+
+    def test_no_op_when_size_matches(self):
+        canvas = np.array([[0, 1, 2], [3, 0, 0]], dtype=np.uint8)
+        out = resize_palette_canvas(canvas, dst_h=2, dst_w=3)
+        assert out.shape == (2, 3)
+        np.testing.assert_array_equal(out, canvas)
+
+    def test_upscales_with_nearest_neighbor_preserving_tids(self):
+        canvas = np.array([[0, 5], [3, 0]], dtype=np.uint8)
+        out = resize_palette_canvas(canvas, dst_h=4, dst_w=4)
+        assert out.shape == (4, 4)
+        assert out.dtype == np.uint8
+        unique = set(np.unique(out).tolist())
+        assert unique == {0, 3, 5}
+
+    def test_downscales_with_nearest_neighbor(self):
+        canvas = np.zeros((8, 8), dtype=np.uint8)
+        canvas[:4, :4] = 7
+        out = resize_palette_canvas(canvas, dst_h=4, dst_w=4)
+        assert out.shape == (4, 4)
+        unique = set(np.unique(out).tolist())
+        assert unique == {0, 7}
+
+    def test_returns_uint8(self):
+        canvas = np.array([[1, 2], [3, 4]], dtype=np.uint8)
+        out = resize_palette_canvas(canvas, dst_h=8, dst_w=6)
+        assert out.dtype == np.uint8
 
 
 class TestComputeUnion:
