@@ -10,13 +10,18 @@ issued via ``conda run -n <env> --no-capture-output``.
 
 Stages produced and skip-flag mapping::
 
-    stage_a       — local: extract frames + tracks      (--skip-stage-a)
-    phmr_masks    — phmr env: build SAM-2 masks         (--skip-phmr)
-    phmr_run      — phmr env: PromptHMR-Vid HPS         (--skip-phmr)
-    phmr_project  — local:    SMPL22 -> COCO17 cam      (--skip-phmr)
-    body4d        — body4d:   SAM-Body4D + joint dump   (--skip-body4d)
-    compare       — local:    metrics.json              (--skip-compare)
-    render        — local:    side_by_side.mp4          (--skip-compare)
+    stage_a       — local:    extract frames + tracks      (--skip-stage-a)
+    phmr_masks    — phmr env: build SAM-2 masks            (--skip-phmr)
+    phmr_run      — phmr env: PromptHMR-Vid HPS            (--skip-phmr)
+    phmr_project  — local:    SMPL22 -> COCO17 cam         (--skip-phmr)
+    phmr_render   — phmr env: per-frame SMPL-X overlay JPG (--skip-phmr | --skip-phmr-render)
+    body4d        — body4d:   SAM-Body4D + joint dump      (--skip-body4d)
+    compare       — local:    metrics.json                 (--skip-compare)
+    render        — local:    side_by_side.mp4             (--skip-compare)
+
+The ``render`` step automatically picks up the PHMR overlay JPGs if
+``<prompthmr_dir>/rendered_frames/`` exists (i.e. ``phmr_render`` ran
+or its artefacts are cached); otherwise the left panel is left blank.
 
 The actual subprocess execution is invoked from ``main()``; the
 per-stage command builders + ``plan_pipeline`` are pure and
@@ -116,6 +121,26 @@ def build_phmr_project_joints_cmd(
     ]
 
 
+def build_phmr_render_overlay_cmd(
+    *,
+    prompthmr_dir: Path,
+    frames_dir: Path,
+    smplx_path: Path,
+) -> List[str]:
+    """Build the PromptHMR mesh-overlay renderer command (runs in phmr env).
+
+    Produces ``<prompthmr_dir>/rendered_frames/<frame:08d>.jpg``, which
+    the side-by-side renderer auto-detects via ``--prompthmr-frames-dir``
+    so the left panel shows real meshes instead of black.
+    """
+    return [
+        "python", "-m", "threed.sidecar_promthmr.render_overlay",
+        "--prompthmr-dir", str(prompthmr_dir),
+        "--frames-dir", str(frames_dir),
+        "--smplx-path", str(smplx_path),
+    ]
+
+
 def build_body4d_cmd(
     *,
     intermediates_dir: Path,
@@ -178,18 +203,25 @@ def plan_pipeline(
     skip_phmr: bool,
     skip_body4d: bool,
     skip_compare: bool,
+    skip_phmr_render: bool = False,
 ) -> List[str]:
     """Return the ordered list of stages that will run, given the skip flags.
 
     Used by the test suite to verify --skip semantics without invoking
     any subprocess. The returned tags map 1:1 with subprocess
     invocations in :func:`main`.
+
+    ``skip_phmr_render=True`` only suppresses the mesh-overlay render
+    (preserves masks/run/project). ``skip_phmr=True`` is dominant — it
+    drops every PHMR stage, including the render.
     """
     out: List[str] = []
     if not skip_stage_a:
         out.append("stage_a")
     if not skip_phmr:
         out.extend(["phmr_masks", "phmr_run", "phmr_project"])
+        if not skip_phmr_render:
+            out.append("phmr_render")
     if not skip_body4d:
         out.append("body4d")
     if not skip_compare:
@@ -227,6 +259,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help="Frame rate written into the side-by-side mp4.")
     p.add_argument("--skip-stage-a", action="store_true")
     p.add_argument("--skip-phmr", action="store_true")
+    p.add_argument(
+        "--skip-phmr-render", action="store_true",
+        help="Skip only the per-frame PHMR mesh-overlay render. Useful "
+             "when iterating on Stage D — leaves masks/run/project intact "
+             "so metrics still update.",
+    )
     p.add_argument("--skip-body4d", action="store_true")
     p.add_argument("--skip-compare", action="store_true")
     p.add_argument(
@@ -234,6 +272,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Override cfg.output_root. Useful on the Lambda box where "
              "intermediates live under ~/work/3d_compare/<clip>/ rather "
              "than <repo>/runs/3d_compare/<clip>/.",
+    )
+    p.add_argument(
+        "--smplx-path", type=Path, default=None,
+        help="Directory with SMPLX_NEUTRAL.npz. Defaults to "
+             "<phmr-repo>/data/body_models/smplx (only used by phmr_render).",
     )
     args = p.parse_args(argv)
     logging.basicConfig(
@@ -252,6 +295,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         skip_phmr=args.skip_phmr,
         skip_body4d=args.skip_body4d,
         skip_compare=args.skip_compare,
+        skip_phmr_render=args.skip_phmr_render,
     )
     log.info("[%s] pipeline plan: %s", args.clip, " -> ".join(plan))
 
@@ -309,6 +353,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             log.error("phmr_project failed (%d)", rc)
             return rc
 
+    if "phmr_render" in plan:
+        smplx_path = args.smplx_path or (cfg.phmr_repo / "data" / "body_models" / "smplx")
+        rc = _conda_run(
+            cfg.phmr_conda_env,
+            build_phmr_render_overlay_cmd(
+                prompthmr_dir=dirs.prompthmr,
+                frames_dir=dirs.intermediates / "frames",
+                smplx_path=smplx_path,
+            ),
+            cwd=REPO_ROOT,
+        )
+        if rc != 0:
+            log.error("phmr_render failed (%d)", rc)
+            return rc
+
     if "body4d" in plan:
         rc = _conda_run(
             cfg.body4d_conda_env,
@@ -339,10 +398,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return rc
 
     if "render" in plan:
+        phmr_frames = dirs.prompthmr / "rendered_frames"
+        phmr_frames_arg: Optional[Path] = phmr_frames if phmr_frames.is_dir() else None
         rc = _local_run(
             build_render_cmd(
                 body4d_frames_dir=dirs.sam_body4d / "rendered_frames",
-                prompthmr_frames_dir=None,
+                prompthmr_frames_dir=phmr_frames_arg,
                 output=dirs.comparison / "side_by_side.mp4",
                 fps=args.fps,
             ),

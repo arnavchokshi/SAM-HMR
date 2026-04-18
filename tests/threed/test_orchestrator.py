@@ -98,6 +98,19 @@ class TestPromptHmrCmds:
         assert "--prompthmr-dir" in cmd
         assert "joints_coco17_cam.npy" in " ".join(cmd)
 
+    def test_render_overlay(self, orch, fake_dirs):
+        """Stage C1.5 — per-frame SMPL-X overlay JPGs (closes Stage D followup #3)."""
+        cmd = orch.build_phmr_render_overlay_cmd(
+            prompthmr_dir=fake_dirs.prompthmr,
+            frames_dir=fake_dirs.intermediates / "frames",
+            smplx_path=Path("/x/PromptHMR/data/body_models/smplx"),
+        )
+        assert "threed.sidecar_promthmr.render_overlay" in cmd
+        assert "--prompthmr-dir" in cmd
+        assert "--frames-dir" in cmd
+        assert "--smplx-path" in cmd
+        assert "/x/PromptHMR/data/body_models/smplx" in cmd
+
 
 class TestBody4dCmd:
     def test_default(self, orch, fake_dirs):
@@ -160,31 +173,54 @@ class TestPipelinePlan:
 
     def test_all_stages_default(self, orch):
         plan = orch.plan_pipeline(
-            skip_stage_a=False, skip_phmr=False, skip_body4d=False, skip_compare=False
+            skip_stage_a=False, skip_phmr=False, skip_body4d=False,
+            skip_compare=False, skip_phmr_render=False,
         )
         assert plan == ["stage_a", "phmr_masks", "phmr_run", "phmr_project",
-                        "body4d", "compare", "render"]
+                        "phmr_render", "body4d", "compare", "render"]
 
     def test_skip_stage_a(self, orch):
         plan = orch.plan_pipeline(
-            skip_stage_a=True, skip_phmr=False, skip_body4d=False, skip_compare=False
+            skip_stage_a=True, skip_phmr=False, skip_body4d=False,
+            skip_compare=False, skip_phmr_render=False,
         )
         assert "stage_a" not in plan
 
     def test_skip_phmr(self, orch):
+        """--skip-phmr drops every PHMR stage (masks/run/project/render)."""
         plan = orch.plan_pipeline(
-            skip_stage_a=False, skip_phmr=True, skip_body4d=False, skip_compare=False
+            skip_stage_a=False, skip_phmr=True, skip_body4d=False,
+            skip_compare=False, skip_phmr_render=False,
         )
         assert not any(s.startswith("phmr") for s in plan)
 
+    def test_skip_phmr_render_only(self, orch):
+        """--skip-phmr-render keeps the rest of the PHMR chain but drops the overlay."""
+        plan = orch.plan_pipeline(
+            skip_stage_a=False, skip_phmr=False, skip_body4d=False,
+            skip_compare=False, skip_phmr_render=True,
+        )
+        assert "phmr_render" not in plan
+        assert "phmr_run" in plan and "phmr_project" in plan
+
+    def test_skip_phmr_implies_skip_phmr_render(self, orch):
+        """If the whole PHMR chain is skipped, the render flag is moot."""
+        plan = orch.plan_pipeline(
+            skip_stage_a=False, skip_phmr=True, skip_body4d=False,
+            skip_compare=False, skip_phmr_render=False,
+        )
+        assert "phmr_render" not in plan
+
     def test_skip_body4d(self, orch):
         plan = orch.plan_pipeline(
-            skip_stage_a=False, skip_phmr=False, skip_body4d=True, skip_compare=False
+            skip_stage_a=False, skip_phmr=False, skip_body4d=True,
+            skip_compare=False, skip_phmr_render=False,
         )
         assert "body4d" not in plan
 
     def test_skip_compare(self, orch):
         plan = orch.plan_pipeline(
-            skip_stage_a=False, skip_phmr=False, skip_body4d=False, skip_compare=True
+            skip_stage_a=False, skip_phmr=False, skip_body4d=False,
+            skip_compare=True, skip_phmr_render=False,
         )
         assert "compare" not in plan and "render" not in plan
