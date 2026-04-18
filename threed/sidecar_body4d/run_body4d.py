@@ -22,11 +22,22 @@ Writes under ``--output-dir`` (matching plan §4.1's ``sam_body4d/`` contract)::
     rendered_frames/<frame:08d>.jpg
     rendered_frames_individual/<tid>/<frame:08d>.jpg
     4d_<gen_id>.mp4
+    joints_4d_individual/<tid>/<frame:08d>.npy   # (70, 3) MHR70 keypoints in cam-coords
+    joints_world.npy                # (T, N_dancers, 70, 3) NaN-padded — Stage D input
     run_summary.json                # written by this runner: timings, VRAM, paths
 
-Joint extraction (per-frame COCO-17 from each PLY + the MHR regressor)
-is deferred to Stage D so the same logic runs on SMPL-X too, keeping
-the comparison code authoritative for joint conventions.
+Joint extraction is performed by monkey-patching ``save_mesh_results``
+to also persist ``person_output["pred_keypoints_3d"]``. After
+``on_4d_generation`` returns we consolidate the per-frame per-track
+``.npy`` files into a single ``joints_world.npy`` with NaN padding for
+absent dancers — same shape contract as the PromptHMR sidecar's
+``joints_world.npy`` (only the joint axis differs: 70 MHR70 vs 22
+SMPL). Stage D's ``auto_reduce_to_coco17`` does the final reduction.
+
+The "world" suffix is a slight misnomer here (SAM-Body4D has no SLAM
+so its meshes/joints are in cam-frame); we keep the filename to match
+the plan's §4.1 layout where both pipelines drop ``joints_world.npy``
+side-by-side. For static-camera clips world ≈ cam.
 
 The wrapper module (``threed.sidecar_body4d.wrapper``) carries the
 GPU-free helpers and is fully unit-tested. This runner is the GPU-side
@@ -43,12 +54,16 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 from threed.io import load_tracks
 from threed.sidecar_body4d.wrapper import (
+    consolidate_joints_npy,
     intermediates_layout_ok,
     iter_palette_obj_ids,
     link_artifacts_into_workdir,
     monkeypatch_sam3,
+    monkeypatch_save_mesh_results,
     sorted_tid_list,
     workdir_layout_ok,
 )
@@ -196,6 +211,10 @@ def main() -> int:
     monkeypatch_sam3(oa)
     print("[ok] SAM-3 builder monkey-patched (we use SAM-2 masks instead)")
 
+    joints_dir = out_dir / "joints_4d_individual"
+    monkeypatch_save_mesh_results(oa, joints_dir)
+    print(f"[ok] save_mesh_results wrapped to dump MHR70 joints into {joints_dir}")
+
     torch.cuda.reset_peak_memory_stats()
     t_init = time.time()
     app = oa.OfflineApp(config_path=str(patched_cfg))
@@ -223,9 +242,24 @@ def main() -> int:
     n_focals = sum(1 for _ in (out_dir / "focal_4d_individual").glob("*/*.json"))
     n_rendered = sum(1 for _ in (out_dir / "rendered_frames").glob("*.jpg"))
     n_mp4 = sum(1 for _ in out_dir.glob("4d_*.mp4"))
+    n_joint_files = sum(1 for _ in (out_dir / "joints_4d_individual").glob("*/*.npy"))
     print(
         f"[done] outputs: {n_plys} PLYs, {n_focals} focal JSONs, "
-        f"{n_rendered} rendered frames, {n_mp4} 4D MP4s"
+        f"{n_rendered} rendered frames, {n_mp4} 4D MP4s, "
+        f"{n_joint_files} joint NPYs"
+    )
+
+    joints = consolidate_joints_npy(
+        joints_dir=out_dir / "joints_4d_individual",
+        tids=tids,
+        n_frames=n_frames,
+        n_joints=70,
+    )
+    np.save(out_dir / "joints_world.npy", joints)
+    n_valid = int(np.sum(~np.isnan(joints[..., 0]).all(axis=-1)))
+    print(
+        f"[wrote] joints_world.npy {joints.shape} "
+        f"({n_valid}/{joints.shape[0] * joints.shape[1]} (frame, dancer) entries valid)"
     )
 
     summary = {
@@ -239,6 +273,9 @@ def main() -> int:
         "n_focal_jsons": n_focals,
         "n_rendered_frames": n_rendered,
         "n_4d_mp4": n_mp4,
+        "n_joint_files": n_joint_files,
+        "n_valid_dancer_frames": n_valid,
+        "joints_world_shape": list(joints.shape),
         "config": {
             "completion_enabled": not args.disable_completion,
             "batch_size_override": args.batch_size,

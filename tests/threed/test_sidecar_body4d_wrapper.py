@@ -9,10 +9,12 @@ import numpy as np
 import pytest
 
 from threed.sidecar_body4d.wrapper import (
+    consolidate_joints_npy,
     intermediates_layout_ok,
     iter_palette_obj_ids,
     link_artifacts_into_workdir,
     monkeypatch_sam3,
+    monkeypatch_save_mesh_results,
     sorted_tid_list,
     workdir_layout_ok,
 )
@@ -209,6 +211,118 @@ class TestWorkdirLayoutOk:
         ok, errs = workdir_layout_ok(out)
         assert not ok
         assert any("basename mismatch" in e for e in errs)
+
+
+class TestMonkeypatchSaveMeshResults:
+    def _build_fake_module(self) -> types.ModuleType:
+        m = types.ModuleType("fake_offline_app")
+        m._calls = []
+        def real_save(outputs, faces, save_dir, focal_dir, image_path, id_current):
+            m._calls.append({
+                "outputs": outputs, "faces": faces,
+                "save_dir": save_dir, "focal_dir": focal_dir,
+                "image_path": image_path, "id_current": id_current,
+            })
+        m.save_mesh_results = real_save
+        return m
+
+    def test_calls_original_first(self, tmp_path: Path):
+        m = self._build_fake_module()
+        joints_dir = tmp_path / "joints"
+        monkeypatch_save_mesh_results(m, joints_dir)
+        outputs = [
+            {"pred_keypoints_3d": np.arange(70 * 3).reshape(70, 3).astype(np.float32)}
+        ]
+        m.save_mesh_results(
+            outputs, faces="FACES", save_dir="/tmp/save", focal_dir="/tmp/focal",
+            image_path="/tmp/00000007.jpg", id_current=[2],
+        )
+        assert len(m._calls) == 1, "original save_mesh_results MUST still be called"
+        assert m._calls[0]["image_path"] == "/tmp/00000007.jpg"
+
+    def test_writes_one_npy_per_person(self, tmp_path: Path):
+        m = self._build_fake_module()
+        joints_dir = tmp_path / "joints"
+        monkeypatch_save_mesh_results(m, joints_dir)
+        outputs = [
+            {"pred_keypoints_3d": np.full((70, 3), 1.0, dtype=np.float32)},
+            {"pred_keypoints_3d": np.full((70, 3), 2.0, dtype=np.float32)},
+        ]
+        m.save_mesh_results(
+            outputs, faces=None, save_dir="/tmp/s", focal_dir="/tmp/f",
+            image_path="/tmp/clip/00000042.jpg", id_current=[0, 4],
+        )
+        f1 = joints_dir / "1" / "00000042.npy"
+        f5 = joints_dir / "5" / "00000042.npy"
+        assert f1.is_file() and f5.is_file()
+        np.testing.assert_array_equal(np.load(f1), np.full((70, 3), 1.0, dtype=np.float32))
+        np.testing.assert_array_equal(np.load(f5), np.full((70, 3), 2.0, dtype=np.float32))
+
+    def test_idempotent(self, tmp_path: Path):
+        m = self._build_fake_module()
+        monkeypatch_save_mesh_results(m, tmp_path / "joints")
+        first = m.save_mesh_results
+        monkeypatch_save_mesh_results(m, tmp_path / "joints")
+        assert m.save_mesh_results is first, (
+            "second monkeypatch must reuse the existing wrapper"
+        )
+
+    def test_empty_outputs_noop(self, tmp_path: Path):
+        m = self._build_fake_module()
+        joints_dir = tmp_path / "joints"
+        monkeypatch_save_mesh_results(m, joints_dir)
+        m.save_mesh_results([], None, "/s", "/f", "/00000000.jpg", [])
+        assert not joints_dir.exists() or not list(joints_dir.iterdir())
+
+    def test_skips_when_pred_keypoints_3d_missing(self, tmp_path: Path, capsys):
+        """If pred_keypoints_3d isn't present, log a warning and skip without crashing.
+
+        Defensive: if upstream's save_mesh_results signature ever changes
+        and stops passing keypoints, we shouldn't break the run.
+        """
+        m = self._build_fake_module()
+        joints_dir = tmp_path / "joints"
+        monkeypatch_save_mesh_results(m, joints_dir)
+        m.save_mesh_results(
+            [{"pred_vertices": np.zeros((100, 3), dtype=np.float32)}],
+            None, "/s", "/f", "/00000000.jpg", [0],
+        )
+        captured = capsys.readouterr()
+        assert "pred_keypoints_3d" in (captured.out + captured.err)
+
+
+class TestConsolidateJointsNpy:
+    def test_packs_per_track_per_frame(self, tmp_path: Path):
+        joints_dir = tmp_path / "joints"
+        for tid in (1, 3):
+            (joints_dir / str(tid)).mkdir(parents=True)
+        for f in (0, 1, 2):
+            np.save(joints_dir / "1" / f"{f:08d}.npy",
+                    np.full((70, 3), float(f), dtype=np.float32))
+            np.save(joints_dir / "3" / f"{f:08d}.npy",
+                    np.full((70, 3), float(f) + 100, dtype=np.float32))
+        out = consolidate_joints_npy(joints_dir, tids=[1, 3], n_frames=3, n_joints=70)
+        assert out.shape == (3, 2, 70, 3)
+        np.testing.assert_array_equal(out[2, 0, 0], np.full(3, 2.0, dtype=np.float32))
+        np.testing.assert_array_equal(out[2, 1, 0], np.full(3, 102.0, dtype=np.float32))
+
+    def test_missing_frames_become_nan(self, tmp_path: Path):
+        joints_dir = tmp_path / "joints"
+        (joints_dir / "1").mkdir(parents=True)
+        np.save(joints_dir / "1" / "00000000.npy",
+                np.zeros((70, 3), dtype=np.float32))
+        out = consolidate_joints_npy(joints_dir, tids=[1], n_frames=3, n_joints=70)
+        assert out.shape == (3, 1, 70, 3)
+        assert not np.isnan(out[0]).any()
+        assert np.isnan(out[1]).all()
+        assert np.isnan(out[2]).all()
+
+    def test_missing_track_dir_all_nan(self, tmp_path: Path):
+        joints_dir = tmp_path / "joints"
+        joints_dir.mkdir()
+        out = consolidate_joints_npy(joints_dir, tids=[1, 2], n_frames=2, n_joints=70)
+        assert out.shape == (2, 2, 70, 3)
+        assert np.isnan(out).all()
 
 
 class TestIterPaletteObjIds:

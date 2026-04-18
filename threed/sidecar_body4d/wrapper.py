@@ -26,10 +26,13 @@ the host repo without the body4d env present.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, List, Mapping, Tuple
+from typing import Any, Iterable, List, Mapping, Sequence, Tuple
+
+import numpy as np
 
 
 _SAM3_PATCH_SENTINEL = "_sam3_patched_by_threed"
+_JOINTS_PATCH_SENTINEL = "_save_mesh_joints_patched_by_threed"
 
 
 def monkeypatch_sam3(offline_app_module: Any) -> None:
@@ -207,6 +210,95 @@ def workdir_layout_ok(out_dir: Path) -> Tuple[bool, List[str]]:
             f"only-in-images={only_img}, only-in-masks={only_msk}"
         )
     return len(errs) == 0, errs
+
+
+def monkeypatch_save_mesh_results(
+    offline_app_module: Any,
+    joints_dir: Path,
+) -> None:
+    """Wrap ``offline_app_module.save_mesh_results`` to also dump joints.
+
+    The upstream ``save_mesh_results`` in
+    ``models/sam_3d_body/notebook/utils.py`` (imported into
+    ``scripts.offline_app``'s namespace) is responsible for writing PLY
+    meshes and focal JSONs per (tid, frame). It receives
+    ``person_output["pred_keypoints_3d"]`` (the MHR70 3D keypoints —
+    shape ``(70, 3)``) but never persists them.
+
+    Our wrapper:
+
+    1. Calls the original first (PLY + focal JSON outputs unchanged).
+    2. For each ``person_output``, writes
+       ``joints_dir/<tid>/<frame:08d>.npy`` with
+       ``pred_keypoints_3d`` as ``np.float32``.
+
+    Track ID mirrors the upstream PLY layout: ``tid = id_current[pid] + 1``
+    so the joint files line up with ``mesh_4d_individual/<tid>/`` for
+    later consolidation by :func:`consolidate_joints_npy`.
+
+    Idempotent (sentinel-marked, same pattern as :func:`monkeypatch_sam3`).
+    Defensive — if a future upstream change drops ``pred_keypoints_3d``
+    from ``outputs`` we log a warning per-frame and continue (PLYs are
+    still saved by the original).
+    """
+    if getattr(offline_app_module, _JOINTS_PATCH_SENTINEL, False):
+        return
+
+    original = offline_app_module.save_mesh_results
+    joints_dir = Path(joints_dir)
+
+    def _wrapped(outputs, faces, save_dir, focal_dir, image_path, id_current):
+        original(outputs, faces, save_dir, focal_dir, image_path, id_current)
+        if not outputs:
+            return
+        import os
+        base = os.path.basename(image_path)[:-4]
+        for pid, person_output in enumerate(outputs):
+            kp = person_output.get("pred_keypoints_3d")
+            if kp is None:
+                print(
+                    f"[wrapper] WARN: pred_keypoints_3d missing for pid={pid} "
+                    f"frame={base}; skipping joint dump"
+                )
+                continue
+            tid = int(id_current[pid]) + 1
+            out_dir = joints_dir / str(tid)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            np.save(out_dir / f"{base}.npy", np.asarray(kp, dtype=np.float32))
+
+    offline_app_module.save_mesh_results = _wrapped
+    setattr(offline_app_module, _JOINTS_PATCH_SENTINEL, True)
+
+
+def consolidate_joints_npy(
+    joints_dir: Path,
+    tids: Sequence[int],
+    n_frames: int,
+    n_joints: int = 70,
+) -> np.ndarray:
+    """Pack per-(tid, frame) joint dumps into a single ``(T, N, J, 3)`` array.
+
+    Reads ``joints_dir/<tid>/<frame:08d>.npy`` for every (frame in
+    ``range(n_frames)``, tid in ``tids``) and stacks them into a single
+    NaN-padded array. Missing files become NaN — matches the convention
+    used by ``threed.sidecar_promthmr.run_promthmr_vid.joints_world_padded``
+    so Stage D's ``np.nanmean`` semantics work uniformly across pipelines.
+
+    The dancer axis (``N``) is ordered by ``tids`` (use the canonical
+    sorted list). Joint count is fixed at MHR70 = 70 by default; pass
+    ``n_joints=17`` if upstream pre-reduces to COCO-17 (we don't).
+    """
+    joints_dir = Path(joints_dir)
+    out = np.full((n_frames, len(tids), n_joints, 3), np.nan, dtype=np.float32)
+    for di, tid in enumerate(tids):
+        sub = joints_dir / str(int(tid))
+        if not sub.is_dir():
+            continue
+        for f in range(n_frames):
+            p = sub / f"{f:08d}.npy"
+            if p.is_file():
+                out[f, di] = np.load(p)
+    return out
 
 
 def iter_palette_obj_ids(track_ids: Iterable[int]) -> List[int]:
