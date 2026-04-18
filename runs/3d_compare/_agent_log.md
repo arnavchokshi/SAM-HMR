@@ -432,3 +432,144 @@ finally swap the hardcoded checkpoint path in
 `PromptHMR/pipeline/phmr_vid.py:22` from the bundled
 `prhmr_release_002.ckpt` to the BEDLAM2-trained
 `phmr_b1b2.ckpt` (per plan-correction commit `8c9232e`).
+
+---
+
+## 2026-04-18 — Plan Task 7 complete (PromptHMR-Vid sidecar runner)
+
+### Source-of-truth deviation
+
+Plan Task 7 step 1 originally placed the runner inside the
+PromptHMR clone (`our_pipeline/run_phmr.py`); we instead put it in
+our repo at `threed/sidecar_promthmr/run_promthmr_vid.py` for the
+same reasons documented in Task 6 (single git history, `pytest`
+coverage from the host repo, no upstream fork patches).
+
+### Implementation (TDD — red → green → 4 runtime fixes → green)
+
+- **`threed/sidecar_promthmr/run_promthmr_vid.py`** — Stage C1 runner.
+  GPU-free helpers: `intermediates_layout_ok` (checks every artifact
+  in one shot for clear errors), `load_per_track_masks` (mutates
+  `tracks` to add `masks`/`track_id`/`detected` per the contract
+  PromptHMR's `Pipeline` expects), `sorted_tid_list` (stable python-int
+  sort tolerant of joblib's `np.int64` keys), `joints_world_padded`
+  (builds the `(n_frames, n_dancers, 22, 3)` NaN-padded comparison
+  artifact). GPU helpers: `_load_frames_rgb`, `_extract_smplx_body_joints_world`,
+  `_write_smpl_and_world4d`, plus the integration `main`.
+- **`tests/threed/test_sidecar_promthmr_run_promthmr_vid.py`** — 15
+  GPU-free pytest cases covering every helper above.
+- The end-to-end PromptHMR-Vid call (DROID-SLAM + ViTPose +
+  PRHMR-Vid + post-opt) is exercised by the box-side smoke test
+  (CUDA-only).
+
+### Operator-side checkpoint swap (one-time)
+
+Per plan-correction commit `8c9232e`, this is where we finally swap
+`PromptHMR/pipeline/phmr_vid.py:23` from the bundled
+`prhmr_release_002.ckpt` to the BEDLAM2-trained `phmr_b1b2.ckpt`.
+The wrapper script (`~/work/run_task7_smoke.sh`) does the swap with
+an idempotent `sed` (no-ops if already swapped) and prints the
+post-swap line for the audit trail. The swap is ALSO the only
+on-disk modification to `~/code/PromptHMR/`; everything else lives
+in our repo.
+
+### Four runtime errors caught + fixed during the smoke test
+
+1. **`UnboundLocalError: cannot access local variable 'imgsize' where
+   it is not associated with a value`** in
+   `pipeline.spec.cam_calib.run_spec_calib`. Upstream's branch:
+   `if isinstance(images, np.ndarray): … elif isinstance(images[0], str): …`
+   leaves `imgsize` undefined for `list[np.ndarray]`. Fix:
+   `_load_frames_rgb` now returns a stacked 4D `np.ndarray` (matches
+   PromptHMR's `load_video_frames`), so the first branch matches.
+   Commit `86413c3`.
+2. **`RuntimeError: Sizes of tensors must match except in dimension 1.
+   Expected size 188 but got size 1 for tensor number 2`** in
+   `smplx.SMPLX.forward`. The forward unconditionally cats
+   `global_orient + body_pose + jaw + leye + reye + l_hand + r_hand`
+   along `dim=1`, so leaving any of them unset reuses
+   `self.jaw_pose` etc. (initialised at batch=1) and trips the
+   dim-0 mismatch. Fix: pass jaw/eye as zero tensors with batch=B
+   and route left+right hand from `pose[:,75:120] / pose[:,120:165]`
+   — exactly mirrors PromptHMR's own call in `pipeline/world.py:104`.
+   Commits `d33af1f` (axis-angle direct slicing) → `7f18d7c`
+   (jaw/eye/hand additions).
+3. *(self-doc)* The intermediate `axis_angle_to_matrix(...)` +
+   `pose2rot=True` combination from the original plan stub corrupts
+   `body_pose` shape because SMPL-X's `pose2rot=True` reshapes (-1,
+   J, 3) on the rot-matrix tensor. Removed; we pass axis-angle
+   directly and let SMPL-X's default `pose2rot=True` do the
+   conversion.
+4. *(architectural)* Added `--reuse-results` flag (commit `59c9cb1`)
+   that skips SLAM/ViTPose/PRHMR-Vid/world if `<output-dir>/results.pkl`
+   already exists — saves ~5 min per iteration when debugging the
+   export tail.
+
+### Smoke test on `adiTest` intermediates (fresh end-to-end run)
+
+Wrapper `~/work/run_task7_smoke.sh` (inner exit-code capture +
+1 Hz background VRAM sampler). Successful end-to-end run inside
+`arnav-3d` tmux at HEAD `59c9cb1`:
+
+```
+[run_promthmr_vid] wrote .../results.pkl, joints_world.npy (188, 5, 22, 3),
+                   world4d.mcs/glb, 5 subject-*.smpl files
+run_promthmr_vid exit=0
+  vram peak (MiB): 10911
+  joints_world.npy shape=(188, 5, 22, 3) dtype=float32 nan_frac=0.000
+```
+
+| Metric | Value |
+| --- | --- |
+| Wall time (start → exit) | 1 min 48 s on adiTest (188 frames, 5 dancers, static-camera) |
+| Peak VRAM | 10 911 MiB (~10.7 GB) — well inside 40 GB envelope |
+| `results.pkl` | 1.0 GB |
+| `joints_world.npy` shape | `(188, 5, 22, 3)` float32, NaN fraction 0.0 |
+| `world4d.mcs` | 348 KB (188 frames, 5 bodies, fps 30) |
+| `world4d.glb` | 74 MB (auto-converted via `convert_mcs_to_gltf`) |
+| `subject-{1..5}.smpl` | 5 files, ~50 KB each |
+
+Joint sanity (using `pipeline.smplx` forward on `smplx_world`):
+
+| Axis | Min | Max | Comment |
+| --- | --- | --- | --- |
+| X (lateral) | -3.37 m | +2.95 m | 5 dancers spanning ~6 m laterally — sensible |
+| Y (height) | +0.009 m | +1.76 m | feet near floor, hands up to head — sensible |
+| Z (depth)  | -11.74 m | -5.34 m | static-camera world is camera-centric so all dancers in front (Z negative); will be re-aligned in Stage D if needed |
+
+### VRAM peaks observed during Task 7
+
+| Stage | Peak VRAM | Notes |
+| --- | --- | --- |
+| ViTPose-h + PRHMR-Vid (1× clip, 188 frames, 5 dancers) | 10.7 GB | Static camera (no DROID-SLAM); use_spec_calib=True; post_opt enabled |
+
+(Sampled at 1 Hz via background `nvidia-smi --query-gpu=memory.used`.)
+
+### Hand-off correction (recap)
+
+The plan stub set `cfg.tracker = "external"` to flag "we provided
+external tracks". That value is NOT recognised by `pipeline.hps_estimation`,
+which gates `mask_prompt = (cfg.tracker == "sam2")`. We set
+`cfg.tracker = "sam2"` so PromptHMR-Vid actually consumes our
+SAM-2 masks. Documented inline in the runner's main().
+
+### Commits this session (Task 7)
+
+- `c8f341f` — `[Plan Task 7] PromptHMR-Vid sidecar runner: scaffold + 15 unit tests`
+- `86413c3` — `[Plan Task 7] runner: stack frames into 4D ndarray (fixes spec_calib UnboundLocalError)`
+- `d33af1f` — `[Plan Task 7] runner: pass axis-angle directly to SMPL-X (fixes shape mismatch)`
+- `7f18d7c` — `[Plan Task 7] runner: pass jaw/eye/hand axis-angle to SMPL-X (mirrors world.py:104)`
+- `59c9cb1` — `[Plan Task 7] runner: add --reuse-results to skip the heavy inference path`
+- (pending) `log: Task 7 complete (PromptHMR-Vid sidecar runner)`
+
+### Open questions for the user
+
+- (none — all blockers resolved)
+
+### Next actions
+
+Proceed to plan Task 8 (`body4d` conda env + clone `gaomingqi/sam-body4d`
++ Gradio demo on a single image — milestone gate B per the operator
+mapping in plan §11). HF gate for `facebook/sam-3d-body-dinov3` was
+already accepted during preflight; the runner-side SAM-3 monkey-patch
+lands later in plan Task 9.
