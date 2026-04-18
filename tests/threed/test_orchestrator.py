@@ -180,6 +180,17 @@ class TestBody4dCmd:
         assert "--batch-size" in cmd
         assert "32" in cmd
 
+    def test_render_overlay(self, orch, fake_dirs):
+        """Stage C2.5 — per-frame body4d overlay JPGs (matches PHMR overlay)."""
+        cmd = orch.build_body4d_render_overlay_cmd(
+            body4d_dir=fake_dirs.sam_body4d,
+            frames_dir=fake_dirs.intermediates / "frames_full",
+        )
+        assert "threed.sidecar_body4d.render_overlay" in cmd
+        assert "--body4d-dir" in cmd
+        assert "--frames-dir" in cmd
+        assert str(fake_dirs.intermediates / "frames_full") in cmd
+
 
 class TestCompareCmd:
     def test_run_compare(self, orch, fake_dirs):
@@ -217,15 +228,16 @@ class TestPipelinePlan:
     def test_all_stages_default(self, orch):
         plan = orch.plan_pipeline(
             skip_stage_a=False, skip_phmr=False, skip_body4d=False,
-            skip_compare=False, skip_phmr_render=False,
+            skip_compare=False, skip_phmr_render=False, skip_body4d_render=False,
         )
         assert plan == ["stage_a", "phmr_masks", "phmr_run", "phmr_project",
-                        "phmr_render", "body4d", "compare", "render"]
+                        "phmr_render", "body4d", "body4d_render",
+                        "compare", "render"]
 
     def test_skip_stage_a(self, orch):
         plan = orch.plan_pipeline(
             skip_stage_a=True, skip_phmr=False, skip_body4d=False,
-            skip_compare=False, skip_phmr_render=False,
+            skip_compare=False, skip_phmr_render=False, skip_body4d_render=False,
         )
         assert "stage_a" not in plan
 
@@ -233,7 +245,7 @@ class TestPipelinePlan:
         """--skip-phmr drops every PHMR stage (masks/run/project/render)."""
         plan = orch.plan_pipeline(
             skip_stage_a=False, skip_phmr=True, skip_body4d=False,
-            skip_compare=False, skip_phmr_render=False,
+            skip_compare=False, skip_phmr_render=False, skip_body4d_render=False,
         )
         assert not any(s.startswith("phmr") for s in plan)
 
@@ -241,7 +253,7 @@ class TestPipelinePlan:
         """--skip-phmr-render keeps the rest of the PHMR chain but drops the overlay."""
         plan = orch.plan_pipeline(
             skip_stage_a=False, skip_phmr=False, skip_body4d=False,
-            skip_compare=False, skip_phmr_render=True,
+            skip_compare=False, skip_phmr_render=True, skip_body4d_render=False,
         )
         assert "phmr_render" not in plan
         assert "phmr_run" in plan and "phmr_project" in plan
@@ -250,20 +262,42 @@ class TestPipelinePlan:
         """If the whole PHMR chain is skipped, the render flag is moot."""
         plan = orch.plan_pipeline(
             skip_stage_a=False, skip_phmr=True, skip_body4d=False,
-            skip_compare=False, skip_phmr_render=False,
+            skip_compare=False, skip_phmr_render=False, skip_body4d_render=False,
         )
         assert "phmr_render" not in plan
 
     def test_skip_body4d(self, orch):
+        """--skip-body4d drops both body4d and body4d_render — can't render
+        meshes that were never produced."""
         plan = orch.plan_pipeline(
             skip_stage_a=False, skip_phmr=False, skip_body4d=True,
-            skip_compare=False, skip_phmr_render=False,
+            skip_compare=False, skip_phmr_render=False, skip_body4d_render=False,
         )
         assert "body4d" not in plan
+        assert "body4d_render" not in plan
+
+    def test_skip_body4d_render_only(self, orch):
+        """--skip-body4d-render keeps body4d itself but drops the overlay
+        render. Useful when iterating on Stage D — metrics still update,
+        the side-by-side falls back to upstream's clean-bg ``rendered_frames/``."""
+        plan = orch.plan_pipeline(
+            skip_stage_a=False, skip_phmr=False, skip_body4d=False,
+            skip_compare=False, skip_phmr_render=False, skip_body4d_render=True,
+        )
+        assert "body4d" in plan
+        assert "body4d_render" not in plan
+
+    def test_skip_body4d_implies_skip_body4d_render(self, orch):
+        """If body4d itself is skipped, body4d_render is dropped too."""
+        plan = orch.plan_pipeline(
+            skip_stage_a=False, skip_phmr=False, skip_body4d=True,
+            skip_compare=False, skip_phmr_render=False, skip_body4d_render=False,
+        )
+        assert "body4d_render" not in plan
 
     def test_skip_compare(self, orch):
         plan = orch.plan_pipeline(
             skip_stage_a=False, skip_phmr=False, skip_body4d=False,
-            skip_compare=True, skip_phmr_render=False,
+            skip_compare=True, skip_phmr_render=False, skip_body4d_render=False,
         )
         assert "compare" not in plan and "render" not in plan
