@@ -702,3 +702,74 @@ our repo at `threed/sidecar_body4d/run_body4d.py`. Per the same
 git-hygiene rationale as Tasks 6 and 7, we keep the runner inside this
 repo (single test suite, single git history) rather than inside
 `~/code/sam-body4d/our_pipeline/` as the original plan stub suggested.
+
+---
+
+## 2026-04-18 — Plan Task 9 complete (SAM-Body4D wrapper helpers)
+
+### Scope split between Task 9 and Task 10
+
+Plan §11 splits the SAM-Body4D sidecar across two tasks:
+
+- **Task 9 (this section): wrapper helpers.** GPU-free, no torch, no
+  cv2, no SAM-Body4D imports. Pure functions that can run in any
+  conda env (including the host repo's `pose-tracking` env). Unit-tested
+  on the laptop, no box round-trip needed.
+- **Task 10 (next section): runner script.** Combines the helpers with
+  GPU-side `OfflineApp.on_4d_generation` + COCO-17 joint extraction
+  from the emitted PLYs + per-frame focal JSONs.
+
+This split keeps the unit-testable surface large and predictable while
+keeping the 9-GB GPU loader out of CI.
+
+### What we wrote (`threed/sidecar_body4d/wrapper.py`)
+
+| Helper | Purpose |
+| --- | --- |
+| `monkeypatch_sam3(module)` | Replaces `build_sam3_from_config → (None, None)`. Idempotent (sentinel `_sam3_patched_by_threed` on the patched module). No-clobber on other module attrs. |
+| `intermediates_layout_ok(interm)` | Returns `(ok, errs)` for `frames_full/`, `masks_palette/`, `tracks.pkl`. Hard-fails on frame≠mask count to surface Task 6 truncation early. |
+| `sorted_tid_list(tracks)` | Stable python-int sort of joblib's `np.int64` keys. Mirrors the PromptHMR helper of the same name (duplicated rather than shared so the test boundary stays per-sidecar). |
+| `link_artifacts_into_workdir(out, frames_full, masks_palette)` | Symlinks both into `OUTPUT_DIR/{images,masks}/`. Symlinks vs copies saves ~hundreds of MB per clip; SAM-Body4D's `glob` follows symlinks. Idempotent — wipes existing children before relinking. |
+| `workdir_layout_ok(out)` | Post-link sanity check that `images/` and `masks/` are 1:1 by basename. Used as a pre-flight inside the runner (cheap, surfaces issues before the slow GPU init). |
+| `iter_palette_obj_ids(track_ids)` | Validates each tid ∈ [1..255] (palette PNG range). Guards against an upstream tracker bug emitting tid=0 (background) or tid>255 — neither has happened in our clips, but loveTest with 15 dancers is well within the limit. |
+
+### Test coverage (`tests/threed/test_sidecar_body4d_wrapper.py`)
+
+28 unit tests across 6 classes. Highlights:
+
+- `TestMonkeypatchSam3`: 4 tests covering replacement, idempotency,
+  sentinel marking, and no-clobber of `OfflineApp` / `RUNTIME` attrs.
+- `TestIntermediatesLayoutOk`: 7 tests covering each missing
+  artifact, count-mismatch detection, and error aggregation (so the
+  operator sees all problems in one shot, not just the first).
+- `TestSortedTidList`: 4 tests including `np.int64` keys and mixed
+  int/numpy keys (the actual joblib output shape).
+- `TestLinkArtifactsIntoWorkdir`: 4 tests including idempotent re-link,
+  count-mismatch raise, and parent-dir auto-creation.
+- `TestWorkdirLayoutOk`: 3 tests including basename mismatch detection
+  (the failure mode if Task 6 wrote a partial mask set).
+- `TestIterPaletteObjIds`: 6 tests including dedup, numpy inputs, the
+  `[1..255]` guard at both ends, and the boundary case of tid=255.
+
+Full suite: 70/70 pass under 0.6 s (no GPU, no body4d env required).
+
+### Commits this session (Task 9)
+
+- (pending) `feat(threed/sidecar_body4d): wrapper helpers + 28 unit tests (plan Task 9)`
+- (pending) `log: Task 9 complete (SAM-Body4D wrapper helpers)`
+
+### Open questions for the user
+
+- (none — wrapper is pure-python and validated locally; Task 10's GPU
+  runner is the next blocker check)
+
+### Next actions
+
+Proceed to plan Task 10 (`SAM-Body4D sidecar runner` — Stage C2). The
+runner imports the wrapper helpers, applies the SAM-3 monkey-patch on
+the box, instantiates `OfflineApp`, runs `on_4d_generation`, then
+extracts COCO-17 joints from the per-frame PLY meshes via the
+SAM-3D-Body MHR regressor (or a vertex-to-joint fallback if the MHR
+exposes one). Outputs land in `runs/3d_compare/<clip>/body4d/` mirroring
+the `prompthmr/` layout from Task 7, with `joints_cam.npy` ready for
+Stage D's pairwise comparison.
