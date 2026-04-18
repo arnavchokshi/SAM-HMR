@@ -362,3 +362,75 @@ def foot_skating_world_frame(
         if m.any():
             out[d] = float(vel[m, d].mean())
     return out
+
+
+# ---------------------------------------------------------------------------
+# 2D reprojection + 2D MPJPE (Followup #4)
+# ---------------------------------------------------------------------------
+
+
+def reproject_3d_to_2d(
+    joints_cam: np.ndarray,
+    *,
+    focal: float,
+    cx: float,
+    cy: float,
+    min_depth: float = 1e-6,
+) -> np.ndarray:
+    """Project cam-frame 3-D joints onto image pixels via a pinhole model.
+
+    For each input point ``(X, Y, Z)`` returns ``(focal*X/Z + cx,
+    focal*Y/Z + cy)``. Joints with ``Z <= min_depth`` (behind / at the
+    camera) are emitted as NaN to keep downstream metrics from picking
+    up huge spurious pixel coordinates near the singularity, and NaN
+    inputs propagate to NaN outputs.
+
+    Parameters
+    ----------
+    joints_cam : np.ndarray
+        ``(..., 3)`` array of cam-frame joints in metres. Any leading
+        shape works — ``(T, J, 3)``, ``(T, N, J, 3)``, or just
+        ``(J, 3)``.
+    focal : float
+        Focal length in pixels (assumed isotropic ``fx == fy``).
+    cx, cy : float
+        Principal-point coordinates in pixels.
+    min_depth : float, default 1e-6
+        Minimum positive depth for a projection to be considered
+        valid; otherwise output is NaN.
+
+    Returns
+    -------
+    np.ndarray
+        ``(..., 2)`` array of image-frame ``(u, v)`` pixel coordinates
+        with the same leading shape as the input.
+    """
+    j = np.asarray(joints_cam, dtype=np.float64)
+    Z = j[..., 2]
+    valid = Z > min_depth
+    XY = j[..., :2]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        uv = XY * (focal / Z[..., None])
+    uv = uv + np.array([cx, cy], dtype=np.float64)
+    out = np.where(valid[..., None], uv, np.nan)
+    return out
+
+
+def mpjpe_2d(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Mean per-joint pixel error between two ``(T, [N,] J, 2)`` arrays.
+
+    Mirrors :func:`per_joint_mpjpe` but operates in image space.
+    Frames where either input has NaN are excluded via ``np.nanmean``
+    so a partially-detected joint doesn't drag the metric to zero.
+
+    Both inputs must have identical shape.
+    """
+    if a.shape != b.shape:
+        raise ValueError(
+            f"mpjpe_2d requires identical shapes, got {a.shape} vs {b.shape}"
+        )
+    diff = np.linalg.norm(a - b, axis=-1)
+    with np.errstate(invalid="ignore"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            return np.nanmean(diff, axis=0)

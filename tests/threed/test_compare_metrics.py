@@ -8,9 +8,11 @@ from threed.compare.metrics import (
     align_procrustes,
     foot_skating,
     foot_skating_world_frame,
+    mpjpe_2d,
     per_joint_jitter,
     per_joint_mpjpe,
     per_joint_mpjpe_pa,
+    reproject_3d_to_2d,
 )
 
 
@@ -364,3 +366,106 @@ class TestFootSkatingWorldFrame:
         j[:, 0, 7, 0] = np.arange(10) * 0.1
         out = foot_skating_world_frame(j, foot_idx=7, threshold_m=0.05)
         np.testing.assert_allclose(out[0], 0.1, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# reproject_3d_to_2d + mpjpe_2d (Followup #4)
+# ---------------------------------------------------------------------------
+
+
+class TestReproject3dTo2d:
+    """Standard pinhole projection of cam-frame joints to image pixels.
+
+    Convention:
+    - input ``joints_cam`` is ``(..., 3)`` in cam-frame metres,
+    - output is ``(..., 2)`` in image-frame pixels (u, v),
+    - ``u = focal * X / Z + cx``, ``v = focal * Y / Z + cy``,
+    - Z <= ``min_depth`` (i.e. behind/at camera) maps to NaN to avoid
+      invalid 1/Z divisions and so downstream MPJPE skips that point.
+    """
+
+    def test_unit_focal_no_offset(self):
+        """f=1, cx=cy=0 -> uv == (X/Z, Y/Z)."""
+        j = np.array([[[1.0, 2.0, 4.0]]])
+        uv = reproject_3d_to_2d(j, focal=1.0, cx=0.0, cy=0.0)
+        np.testing.assert_allclose(uv[0, 0], [0.25, 0.5], atol=1e-9)
+
+    def test_with_focal_and_principal_point(self):
+        """f=100, cx=200, cy=300 on (X,Y,Z)=(1,1,2)."""
+        j = np.array([[[1.0, 1.0, 2.0]]])
+        uv = reproject_3d_to_2d(j, focal=100.0, cx=200.0, cy=300.0)
+        np.testing.assert_allclose(uv[0, 0], [250.0, 350.0], atol=1e-9)
+
+    def test_negative_z_returns_nan(self):
+        """Joints behind the camera must NOT silently project to large pixels."""
+        j = np.array([[[1.0, 1.0, -2.0], [1.0, 1.0, 5.0]]])
+        uv = reproject_3d_to_2d(j, focal=100.0, cx=0.0, cy=0.0)
+        assert np.isnan(uv[0, 0]).all()
+        assert np.isfinite(uv[0, 1]).all()
+
+    def test_zero_z_returns_nan(self):
+        """Joints exactly at the focal plane (Z=0) project to infinity -> NaN."""
+        j = np.array([[[1.0, 1.0, 0.0]]])
+        uv = reproject_3d_to_2d(j, focal=100.0, cx=0.0, cy=0.0)
+        assert np.isnan(uv[0, 0]).all()
+
+    def test_propagates_nan(self):
+        """NaN inputs -> NaN outputs (don't fabricate pixels for missing joints)."""
+        j = np.array([[[np.nan, np.nan, np.nan], [1.0, 1.0, 2.0]]])
+        uv = reproject_3d_to_2d(j, focal=100.0, cx=0.0, cy=0.0)
+        assert np.isnan(uv[0, 0]).all()
+        assert np.isfinite(uv[0, 1]).all()
+
+    def test_preserves_leading_dims(self):
+        """Should support arbitrary leading dims (T, J, 3) and (T, N, J, 3)."""
+        rng = np.random.default_rng(0)
+        j_tj = rng.standard_normal((5, 17, 3)) + np.array([0.0, 0.0, 4.0])
+        j_tnj = rng.standard_normal((5, 3, 17, 3)) + np.array([0.0, 0.0, 4.0])
+        uv_tj = reproject_3d_to_2d(j_tj, focal=500.0, cx=128.0, cy=128.0)
+        uv_tnj = reproject_3d_to_2d(j_tnj, focal=500.0, cx=128.0, cy=128.0)
+        assert uv_tj.shape == (5, 17, 2)
+        assert uv_tnj.shape == (5, 3, 17, 2)
+
+
+class TestMpjpe2d:
+    """L2 pixel error between two ``(T, [N,] J, 2)`` arrays.
+
+    NaN frames in either input are skipped (np.nanmean), matching the
+    cam-frame ``per_joint_mpjpe`` semantics so partially-detected
+    joints don't bias the result toward zero.
+    """
+
+    def test_zero_for_identical(self):
+        rng = np.random.default_rng(42)
+        a = rng.standard_normal((5, 1, 17, 2))
+        out = mpjpe_2d(a, a.copy())
+        assert out.shape == (1, 17)
+        np.testing.assert_allclose(out, np.zeros((1, 17)), atol=1e-12)
+
+    def test_constant_offset(self):
+        a = np.zeros((5, 1, 17, 2))
+        b = a + np.array([3.0, 4.0])
+        out = mpjpe_2d(a, b)
+        np.testing.assert_allclose(out, np.full((1, 17), 5.0), atol=1e-12)
+
+    def test_nan_skipped(self):
+        a = np.zeros((10, 1, 17, 2))
+        b = a + np.array([3.0, 4.0])
+        b[0] = np.nan
+        out = mpjpe_2d(a, b)
+        np.testing.assert_allclose(out, np.full((1, 17), 5.0), atol=1e-12)
+
+    def test_shape_mismatch_raises(self):
+        a = np.zeros((5, 1, 17, 2))
+        b = np.zeros((5, 2, 17, 2))
+        with pytest.raises(ValueError, match="shape"):
+            mpjpe_2d(a, b)
+
+    def test_returns_nan_for_dancer_with_no_finite_pairs(self):
+        """A dancer with all-NaN in either input -> NaN per joint, not 0."""
+        a = np.zeros((5, 2, 17, 2))
+        b = np.zeros((5, 2, 17, 2))
+        b[:, 1] = np.nan
+        out = mpjpe_2d(a, b)
+        assert np.isnan(out[1]).all()
+        np.testing.assert_allclose(out[0], np.zeros(17), atol=1e-12)
