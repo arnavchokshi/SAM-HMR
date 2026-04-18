@@ -1136,3 +1136,64 @@ Proceed to plan Task 14 (loveTest + remaining 7 clips + the operator
 report). First step is a full A → B → C1/C2 → D smoke on one fresh
 clip (probably loveTest since it's the heaviest, validating VRAM
 headroom early).
+
+---
+
+## 2026-04-18 — Plan Task 14 partial (adiTest report shipped, multi-clip deferred)
+
+### Decision
+Asked the user (`AskQuestion`) to scope Task 14 because:
+- Only `adiTest` has a tracking cache; the other 7 candidate clips
+  (`loveTest`, `easyTest`, `gymTest`, `2pplTest`, `BigTest`, plus
+  optional `mirrorTest`) need YOLO+DeepOcSort tracking run on Mac
+  before the orchestrator can take over.
+- Per-clip cost: ~14-55 min wall on the A100 (linear in dancers;
+  loveTest's ~15 dancers ≈ 50 min for body4d alone with completion
+  ON), totalling ~2 h GPU + ~30-60 min Mac per clip.
+- Total spend not previously authorised by the user.
+
+User skipped the question. Following the user's earlier directive
+("look at all info and take ur best assumptions"), I chose to ship
+a thorough report on the validated adiTest run and explicit
+followup procedure, rather than burn unauthorised GPU budget.
+
+### What shipped
+- `runs/3d_compare/REPORT.md` — the operator report. Sections:
+  1. What the pipeline does (one-paragraph summary of stages A → D)
+  2. End-to-end on adiTest (one-shot invocation, wall + VRAM
+     table, output tree, per-joint metrics table, foot-skating per
+     dancer, side-by-side mp4 layout)
+  3. Validated unit-test coverage (161 tests + 3 skips)
+  4. Deviations from the plan (6 items, with commit refs)
+  5. Followup procedure for extending to other clips (3-step
+     prerequisites + per-clip wall estimates table)
+  6. Open followups (5 items: Procrustes alignment, world-frame
+     foot-skating, PHMR mesh overlays, 2D reprojection, HTML report)
+  7. Reproducibility receipts (commits, env pins, upstream pins,
+     test count)
+
+### Per-joint highlights (mean across 5 adiTest dancers)
+| Joint group | MPJPE (m) | Jitter PHMR | Jitter Body4D |
+|---|---:|---:|---:|
+| Face (5 joints, collapsed to SMPL head) | 9.18-9.29 | 0.030 | 0.029-0.037 |
+| Shoulders | 9.18 | 0.033 | 0.031 |
+| Hips | 9.17 | 0.022 | **0.007** (3× smoother) |
+| Knees | 9.22 | 0.038 | 0.046 |
+| Ankles | 9.22 | 0.057 | 0.072 |
+| Elbows | 9.20 | 0.062 | 0.067 |
+| Wrists (highest jitter) | 9.21 | 0.091 | **0.108** |
+
+Body4D is markedly smoother on the hip and slightly noisier on
+extremities — the latter is consistent with no-SLAM, per-frame depth
+from MoGe-2.
+
+### Open question for the user (asked, awaiting answer)
+- Run loveTest only? all 5 remaining clips? different scope?
+- Report format: markdown only / + HTML / + embedded videos?
+
+### Commits this session (Task 14 partial)
+- (pending) `docs: Task 14 partial — adiTest operator report + followup procedure`
+
+### Next actions
+Wait for user confirmation on Task 14 scope. The orchestrator and
+all stages are validated; the per-clip add is just runtime cost.
