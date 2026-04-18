@@ -1542,3 +1542,94 @@ production output, so the simpler default wins.
   on user confirmation of GPU spend (~$1-3, ~2 h A100). The box is
   staged and ready (`~/work/run_all_clips.sh` and per-clip caches
   in `~/work/cache/` are in place).
+
+---
+
+## 2026-04-18 — Followup #6 part 2 (mesh scale fix)
+
+### Symptom
+After the first round of Followup #6 the right panel of
+`side_by_side.mp4` was clearly visible — but every dancer was
+rendered at roughly **half** their true on-screen size, hovering
+near the floor instead of co-located with the real dancers in the
+input frame. The user flagged this with a screenshot ("very close
+but right side is showing up tiny"). PHMR (left) was sized
+correctly, so the issue was localised to the body4d sidecar.
+
+### Root cause — double translation
+A halved on-screen size corresponds to **doubled depth** under the
+shared focal: the meshes were sitting at roughly `2*cam_t.z`
+instead of `cam_t.z`. Tracing it:
+
+1. SAM-Body4D's :func:`save_mesh_results` calls
+   `Renderer.vertices_to_trimesh(pred_vertices, pred_cam_t)`. That
+   function emits PLY vertices `(pred_verts + cam_t) * [1, -1, -1]`
+   — i.e. cam_t is **already added** to the model-space vertices and
+   the OpenCV→OpenGL X-rotation is **already applied** before the
+   PLY hits disk.
+2. SAM-Body4D's multi-dancer rendering path
+   (`Renderer.render_rgba_multiple`, lines 400-447 of
+   `sam_3d_body/visualization/renderer.py`) puts the camera at the
+   world origin (`camera_pose = np.eye(4)`) and adds each dancer's
+   PLY-derived trimesh **as-is** — no `camera_translation`
+   negation, no per-dancer offset. The single-dancer `__call__`
+   path *does* negate `cam_t.x` (line 187) but that's a different
+   convention used only when rendering one dancer at a time.
+3. Followup #6's first draft modelled its scene on the
+   single-dancer convention by translating each PLY by
+   `-camera_world = (cam_t.x, -cam_t.y, -cam_t.z)`. With the PLY
+   centroid already at `(cam_t.x, -cam_t.y, -cam_t.z)`, the
+   net dancer position was `(2*cam_t.x, -2*cam_t.y, -2*cam_t.z)` —
+   exactly the doubled depth.
+
+### Fix (`a3c77bd`)
+1. Drop `body4d_dancer_world_pos` (whose math was the bug).
+2. Replace it with `upstream_ply_centroid(cam_t)` — a documenting
+   helper that returns the expected PLY-on-disk centroid and
+   exists purely to pin the convention with unit tests. Future
+   changes that re-introduce a `-camera_world` shift on top of the
+   PLY will fail the regression suite before any GPU run.
+3. `_build_pyrender_scene` now loads PLY vertices verbatim. The
+   docstring cross-references `render_rgba_multiple` line-by-line
+   so the next reader sees the upstream precedent immediately.
+4. `flip_yz_verts` is left in place as a generic geometry helper;
+   its docstring already says it's not used by the overlay path.
+5. Tests in `test_body4d_render_overlay.py` rewritten:
+   `TestBody4dDancerWorldPos` (5 tests of the buggy convention)
+   removed; `TestUpstreamPlyCentroid` (7 tests) added — including
+   `test_centroid_z_is_in_front_of_origin_camera` which directly
+   guards the property that broke (a positive cam_t.z must yield a
+   negative centroid Z, so the mesh is in front of an origin
+   camera looking down `-Z`).
+
+### Box receipt — adiTest scale-correct re-render
+```
+git pull (a3c77bd):              5 files / 337 inserts / 108 deletes
+body4d render_overlay:           33 s wall, 188 frames, 5 dancers (188/188 drawn)
+re-stitch (compare + render):    4 s wall
+side_by_side.mp4:                10.4 MB (was 10.4 MB pre-fix; ffmpeg
+                                  re-encode rounding only — verified visually)
+sam_body4d/rendered_frames_overlay/<frame>.jpg: dancers now full-size,
+                                  co-located with the input video humans
+```
+
+Pulled `side_by_side.mp4` and `body4d_overlay_frame50.jpg` to
+`/Users/arnavchokshi/Desktop/3d_compare_outputs/adiTest/` and
+opened the video; user-visible right-panel scale matches the
+left-panel (PHMR) scale within a few pixels.
+
+### Test totals
+- Before: 239 passed, 3 skipped
+- After:  241 passed, 3 skipped (+7 in `TestUpstreamPlyCentroid`,
+  -5 from removed `TestBody4dDancerWorldPos`)
+
+### Lesson learned
+When mirroring an upstream renderer, **read the multi-dancer path
+specifically**, not the single-dancer path. The two paths can use
+opposite conventions (one negates `cam_t.x`, the other doesn't) and
+the difference doesn't matter visually until you have ≥2 dancers
+overlapping. The fix took one pyrender re-render and a 7-test
+regression pin.
+
+### Commits this section
+- `a3c77bd` fix(sidecar_body4d): drop double translation in overlay scene (mesh scale)

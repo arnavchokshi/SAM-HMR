@@ -24,6 +24,7 @@ NEVER detected by a given pipeline.
 """
 from __future__ import annotations
 
+import warnings
 from typing import Optional, Tuple
 
 import numpy as np
@@ -282,3 +283,82 @@ def per_joint_mpjpe_pa(
         a, b, per_dancer=per_dancer, allow_scale=allow_scale
     )
     return per_joint_mpjpe(a, b_aligned)
+
+
+# ---------------------------------------------------------------------------
+# foot_skating_world_frame (Followup #2)
+# ---------------------------------------------------------------------------
+
+
+def foot_skating_world_frame(
+    joints_world: np.ndarray,
+    *,
+    foot_idx: int = 7,
+    threshold_m: float = 0.05,
+    height_axis: int = 1,
+) -> np.ndarray:
+    """Per-dancer mean planted-foot velocity in *world* frame.
+
+    Variant of :func:`foot_skating` that
+
+    1. operates on world-frame joints (``joints_world.npy`` from PromptHMR),
+    2. *calibrates the floor per-dancer* by taking each dancer's own
+       minimum foot height as their floor proxy, so a tripod camera mounted
+       above the dancers' feet still produces a meaningful "planted" mask.
+
+    A foot is considered planted on frame ``t`` when its ``height_axis``
+    coordinate is within ``threshold_m`` metres of that dancer's per-clip
+    minimum (``min_t (joint_height_t)``). For each dancer, the metric is the
+    mean L2 velocity of the foot joint across consecutive planted frames
+    (``vel = ||foot[t+1] - foot[t]||``). NaN frames are excluded from both
+    the floor estimation and the velocity computation.
+
+    Parameters
+    ----------
+    joints_world : np.ndarray
+        ``(T, N_dancers, J, 3)`` array of world-frame joints. Defaults
+        assume SMPL-22 layout (``foot_idx=7`` left ankle).
+    foot_idx : int, default 7
+        Joint index for the foot (SMPL-22 left_ankle = 7, right_ankle = 8;
+        for COCO-17 use 15 / 16).
+    threshold_m : float, default 0.05
+        Maximum distance above the per-dancer floor for the foot to be
+        considered "planted".
+    height_axis : int, default 1
+        Index of the height axis in the world frame. PromptHMR's
+        ``joints_world.npy`` is ``Y``-up so the default (``1``) matches.
+        Pass ``2`` for a ``Z``-up convention.
+
+    Returns
+    -------
+    np.ndarray
+        ``(N_dancers,)`` array of planted-foot mean velocities in m / frame.
+        ``0.0`` for dancers with no planted frames OR no detections.
+
+    Notes
+    -----
+    Unlike :func:`foot_skating`, no global ground plane is required. We
+    take ``min_t Y_t`` (over valid frames) as the floor proxy per dancer
+    since for a clip where every dancer's foot touches the floor at some
+    point, this is the cleanest available estimator. For airborne-only
+    clips (jumps, lifts) this will under-estimate the floor by the
+    minimum airtime gap; that's acceptable since the metric is intended
+    as a *relative* diagnostic across clips and pipelines, not an
+    absolute foot-distance measurement.
+    """
+    foot = joints_world[:, :, foot_idx, :]
+    h = foot[:, :, height_axis]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        floor = np.nanmin(h, axis=0)
+    diff = h - floor[None, :]
+    with np.errstate(invalid="ignore"):
+        planted = diff < threshold_m
+    vel = np.linalg.norm(np.diff(foot, axis=0), axis=-1)
+    mask = planted[1:] & ~np.isnan(vel)
+    out = np.zeros(joints_world.shape[1], dtype=np.float64)
+    for d in range(joints_world.shape[1]):
+        m = mask[:, d]
+        if m.any():
+            out[d] = float(vel[m, d].mean())
+    return out

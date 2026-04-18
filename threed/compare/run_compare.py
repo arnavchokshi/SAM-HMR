@@ -40,6 +40,7 @@ from threed.compare.joints import (
 )
 from threed.compare.metrics import (
     foot_skating,
+    foot_skating_world_frame,
     per_joint_jitter,
     per_joint_mpjpe,
     per_joint_mpjpe_pa,
@@ -116,6 +117,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument(
         "--foot-threshold", type=float, default=0.05,
         help="Foot-height threshold (m) below which the foot is 'planted'.",
+    )
+    p.add_argument(
+        "--prompthmr-world-joints", type=Path, default=None,
+        help="Optional: path to PromptHMR's world-frame joints_world.npy "
+             "(SMPL-22, Y-up). If supplied, the world-frame foot-skating "
+             "metric is computed via per-dancer floor calibration "
+             "(see metrics.foot_skating_world_frame).",
+    )
+    p.add_argument(
+        "--world-foot-idx", type=int, default=7,
+        help="Joint index for the foot in the SMPL-22 world array "
+             "(default 7 = left_ankle).",
+    )
+    p.add_argument(
+        "--world-foot-threshold", type=float, default=0.05,
+        help="Per-dancer-floor threshold (m) for world-frame foot-skating.",
     )
     args = p.parse_args(argv)
 

@@ -7,6 +7,7 @@ import pytest
 from threed.compare.metrics import (
     align_procrustes,
     foot_skating,
+    foot_skating_world_frame,
     per_joint_jitter,
     per_joint_mpjpe,
     per_joint_mpjpe_pa,
@@ -279,3 +280,87 @@ class TestPerJointMpjpePa:
         b[5] = np.nan
         pa = per_joint_mpjpe_pa(a, b)
         np.testing.assert_allclose(pa, np.zeros_like(pa), atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# foot_skating_world_frame (Followup #2)
+# ---------------------------------------------------------------------------
+
+
+class TestFootSkatingWorldFrame:
+    """World-frame foot-skating uses PHMR's ``joints_world.npy`` (SMPL-22 with
+    Y-up). Unlike the cam-frame ``foot_skating``, here the ground plane is
+    *calibrated per-dancer* by taking each dancer's lowest foot height as a
+    proxy for the floor. This means the metric is robust to:
+
+    1. tripod cameras above floor level (cam-frame Y has no zero crossing),
+    2. dancers of different heights,
+    3. clips on slightly slanted floors.
+
+    The metric returns a per-dancer mean velocity (m / frame) of "planted"
+    foot positions, where "planted" is ``height_above_floor < threshold_m``.
+    """
+
+    def test_planted_foot_zero_when_static(self):
+        """Foot at floor height, no motion -> skate=0."""
+        j = np.zeros((10, 1, 22, 3), dtype=np.float64)
+        out = foot_skating_world_frame(j)
+        assert out.shape == (1,)
+        assert out[0] == 0.0
+
+    def test_skating_picks_up_horizontal_motion(self):
+        """Foot at floor + sliding 0.1 m/frame in X -> skate ~ 0.1."""
+        j = np.zeros((10, 1, 22, 3), dtype=np.float64)
+        j[:, 0, 7, 0] = np.arange(10) * 0.1
+        out = foot_skating_world_frame(j, foot_idx=7)
+        np.testing.assert_allclose(out[0], 0.1, rtol=1e-6)
+
+    def test_lifted_foot_not_counted(self):
+        """Foot rising above per-dancer floor -> lifted frames not counted."""
+        j = np.zeros((10, 1, 22, 3), dtype=np.float64)
+        j[0, 0, 7, 1] = 0.0
+        j[1:, 0, 7, 1] = 1.0
+        j[:, 0, 7, 0] = np.arange(10) * 0.5
+        out = foot_skating_world_frame(j, foot_idx=7, threshold_m=0.05)
+        assert out[0] == 0.0
+
+    def test_per_dancer_floor_calibration(self):
+        """A dancer entirely above Y=10 should still detect their planted foot."""
+        j = np.zeros((10, 1, 22, 3), dtype=np.float64)
+        j[:, 0, 7, 1] = 10.0
+        j[:, 0, 7, 0] = np.arange(10) * 0.05
+        out = foot_skating_world_frame(j, foot_idx=7, threshold_m=0.05)
+        np.testing.assert_allclose(out[0], 0.05, rtol=1e-6)
+
+    def test_per_dancer_independent(self):
+        """Two dancers, only one slides -> only that dancer's skate is non-zero."""
+        j = np.zeros((10, 2, 22, 3), dtype=np.float64)
+        j[:, 0, 7, 0] = np.arange(10) * 0.2
+        out = foot_skating_world_frame(j, foot_idx=7)
+        np.testing.assert_allclose(out[0], 0.2, rtol=1e-6)
+        assert out[1] == 0.0
+
+    def test_handles_nan_frames(self):
+        """NaN frames must be excluded from velocity computation."""
+        j = np.zeros((10, 1, 22, 3), dtype=np.float64)
+        j[:, 0, 7, 0] = np.arange(10) * 0.1
+        j[5, 0, 7] = np.nan
+        out = foot_skating_world_frame(j, foot_idx=7)
+        assert np.isfinite(out[0])
+        assert out[0] > 0.0
+
+    def test_dancer_with_all_nan_returns_zero(self):
+        """Dancer entirely undetected -> 0.0 (matches cam-frame foot_skating contract)."""
+        j = np.zeros((10, 2, 22, 3), dtype=np.float64)
+        j[:, 1] = np.nan
+        out = foot_skating_world_frame(j, foot_idx=7)
+        assert out[0] == 0.0
+        assert out[1] == 0.0
+
+    def test_uses_y_axis_as_height(self):
+        """Default ``height_axis=1`` (Y is up) — sanity check the docs."""
+        j = np.zeros((10, 1, 22, 3), dtype=np.float64)
+        j[:, 0, 7, 2] = 1.0
+        j[:, 0, 7, 0] = np.arange(10) * 0.1
+        out = foot_skating_world_frame(j, foot_idx=7, threshold_m=0.05)
+        np.testing.assert_allclose(out[0], 0.1, rtol=1e-6)

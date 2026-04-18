@@ -164,3 +164,39 @@ class TestMainEndToEnd:
         assert pa.shape == (2, 17)
         assert float(raw.mean()) > 5.0
         assert float(pa.mean()) < 1e-4
+
+    def test_emits_world_frame_foot_skating_field_when_provided(self, tmp_path, coco17_a, coco17_b):
+        """Followup #2: when ``--prompthmr-world-joints`` is provided,
+        ``metrics.json`` gains a ``foot_skating_phmr_world_m_per_frame``
+        field computed from PHMR's SMPL-22 world joints. Without the flag,
+        the field is absent (back-compat)."""
+        world = np.zeros((10, 2, 22, 3), dtype=np.float32)
+        world[:, 0, 7, 0] = np.arange(10) * 0.1
+        wp = tmp_path / "world.npy"
+        np.save(wp, world)
+        out = tmp_path / "m.json"
+        rc = main([
+            "--prompthmr-joints", str(coco17_a),
+            "--body4d-joints", str(coco17_b),
+            "--output", str(out),
+            "--prompthmr-world-joints", str(wp),
+        ])
+        assert rc == 0
+        m = json.loads(out.read_text())
+        assert "foot_skating_phmr_world_m_per_frame" in m
+        ws = np.array(m["foot_skating_phmr_world_m_per_frame"])
+        assert ws.shape == (2,)
+        np.testing.assert_allclose(ws[0], 0.1, rtol=1e-5)
+        assert ws[1] == 0.0
+
+    def test_world_frame_foot_skating_absent_when_world_joints_missing(self, tmp_path, coco17_a, coco17_b):
+        """Back-compat: omitting ``--prompthmr-world-joints`` -> field is not present."""
+        out = tmp_path / "m.json"
+        rc = main([
+            "--prompthmr-joints", str(coco17_a),
+            "--body4d-joints", str(coco17_b),
+            "--output", str(out),
+        ])
+        assert rc == 0
+        m = json.loads(out.read_text())
+        assert "foot_skating_phmr_world_m_per_frame" not in m
