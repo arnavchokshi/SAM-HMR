@@ -187,6 +187,24 @@ def _build_predictor(prompthmr_path: Path, ckpt: Path, cfg: str):
     return build_sam2_video_predictor(abs_cfg, str(ckpt))
 
 
+def load_video_frames_bgr(frames_dir: Path) -> np.ndarray:
+    """Load every ``*.jpg`` in ``frames_dir`` (sorted) into ``(N, H, W, 3)`` BGR uint8.
+
+    PromptHMR's ``SAM2VideoPredictor.init_state`` was modified upstream to
+    require ``video_frames`` as the primary positional argument, replacing
+    the original SAM-2 ``video_path`` API. ``video_frames`` must be a
+    stacked numpy array (``init_state`` does ``video_frames.shape[1:3]``)
+    and the in-class ``_load_img_as_tensor`` accepts BGR numpy arrays
+    without channel-swap, so we load via ``cv2.imread`` and stack.
+    """
+    import cv2
+
+    frame_paths = sorted(frames_dir.glob("*.jpg"))
+    if not frame_paths:
+        raise FileNotFoundError(f"no JPG frames in {frames_dir}")
+    return np.stack([cv2.imread(str(p)) for p in frame_paths])
+
+
 def _propagate_with_predictor(
     predictor,
     frames_dir: Path,
@@ -195,8 +213,9 @@ def _propagate_with_predictor(
     """Run SAM-2 propagation, returning ``{frame -> {tid -> bool mask}}``."""
     import torch
 
+    video_frames = load_video_frames_bgr(frames_dir)
     state = predictor.init_state(
-        video_path=str(frames_dir),
+        video_frames=video_frames,
         async_loading_frames=False,
         offload_video_to_cpu=True,
     )

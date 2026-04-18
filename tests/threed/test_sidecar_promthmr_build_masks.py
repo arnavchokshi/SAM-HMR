@@ -18,6 +18,7 @@ from threed.sidecar_promthmr.build_masks import (
     davis_palette,
     hydra_absolute_config_name,
     inject_prompthmr_path,
+    load_video_frames_bgr,
     resolve_default_sam2_paths,
     valid_frames_set,
 )
@@ -190,3 +191,48 @@ class TestHydraAbsoluteConfigName:
         assert result.endswith("/pipeline/sam2/sam2_hiera_t.yaml")
         # The substring after the leading '/' must round-trip as a real abs path
         assert result[1:].startswith(str(tmp_path.resolve()))
+
+
+class TestLoadVideoFramesBgr:
+    """Regression for the 2026-04-18 ``init_state`` TypeError.
+
+    PromptHMR's modified ``SAM2VideoPredictor.init_state`` requires a
+    stacked ``video_frames`` array (it does ``video_frames.shape[1:3]``)
+    instead of the upstream ``video_path``. The in-class
+    ``_load_img_as_tensor`` accepts BGR numpy arrays without channel-swap,
+    so the loader must emit ``(N, H, W, 3)`` BGR uint8.
+    """
+
+    def _make_frame(self, h: int, w: int, fill: int) -> np.ndarray:
+        img = np.full((h, w, 3), fill, dtype=np.uint8)
+        return img
+
+    def test_returns_4d_uint8_in_sorted_order(self, tmp_path):
+        import cv2
+
+        for idx, fill in enumerate([10, 20, 30]):
+            cv2.imwrite(str(tmp_path / f"{idx:05d}.jpg"), self._make_frame(8, 16, fill))
+        result = load_video_frames_bgr(tmp_path)
+        assert result.shape == (3, 8, 16, 3)
+        assert result.dtype == np.uint8
+        # JPEG is lossy, so check median (not exact equality) per frame
+        assert abs(int(np.median(result[0])) - 10) <= 2
+        assert abs(int(np.median(result[1])) - 20) <= 2
+        assert abs(int(np.median(result[2])) - 30) <= 2
+
+    def test_init_state_compatible_shape_unpacks_to_h_w(self, tmp_path):
+        """``init_state`` does ``video_frames.shape[1:3]``; pin that contract."""
+        import cv2
+
+        cv2.imwrite(str(tmp_path / "00000.jpg"), self._make_frame(11, 17, 50))
+        result = load_video_frames_bgr(tmp_path)
+        h, w = result.shape[1:3]
+        assert (h, w) == (11, 17)
+
+    def test_missing_dir_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            load_video_frames_bgr(tmp_path / "no_such_subdir")
+
+    def test_empty_dir_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            load_video_frames_bgr(tmp_path)
