@@ -190,11 +190,12 @@ def _extract_smplx_body_joints_world(
     Returns ``{tid -> (frames_idx, joints_T_22_3 np.float32)}``. PromptHMR
     stores per-dancer SMPL-X parameters under
     ``results['people'][tid]['smplx_world']`` as
-    ``{'pose' (T, 165), 'shape' (T, 10), 'trans' (T, 3)}`` — convert
-    axis-angle pose to rotmats and call SMPL-X.
+    ``{'pose' (T, 165), 'shape' (T, 10), 'trans' (T, 3)}``. We pass the
+    axis-angle pose directly (smplx defaults to ``pose2rot=True`` and
+    converts internally); going through axis_angle_to_matrix and
+    forgetting ``pose2rot=False`` corrupts the body_pose shape.
     """
     import torch
-    from prompt_hmr.utils.rotation_conversions import axis_angle_to_matrix
 
     device = next(pipeline.smplx.parameters()).device
     out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
@@ -205,10 +206,10 @@ def _extract_smplx_body_joints_world(
             pose = torch.as_tensor(smplx_w["pose"], dtype=torch.float32, device=device)
             shape = torch.as_tensor(smplx_w["shape"], dtype=torch.float32, device=device)
             transl = torch.as_tensor(smplx_w["trans"], dtype=torch.float32, device=device)
-            rotmat = axis_angle_to_matrix(pose.reshape(-1, 55, 3))
+            # SMPL-X axis-angle layout: 0:3 = global_orient, 3:66 = body (21 joints).
             o = pipeline.smplx(
-                global_orient=rotmat[:, :1],
-                body_pose=rotmat[:, 1:22],
+                global_orient=pose[:, 0:3],
+                body_pose=pose[:, 3 : 3 + 21 * 3],
                 betas=shape,
                 transl=transl,
             )
