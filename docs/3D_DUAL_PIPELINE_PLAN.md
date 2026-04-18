@@ -2631,13 +2631,53 @@ These are quick checks the human operator should do once before Task 1:
 | 2026-04-17 | Task 2 — extract tracks from cache | OK — 1 new test, 4/4 cumulative (`dfe45ca`) |
 | 2026-04-17 | Task 3 — extract frames at 896 + full | OK — 1 new test, 5/5 cumulative (`c8a7e33`) |
 | 2026-04-17 | Task 4 — Stage A driver (+ smoke test on `adiTest`) | OK — 188 frames + 5 tracks IDs 1-5, mean conf 0.86-0.88 (`f2ce156`) |
-| | clone PromptHMR | |
-| | install `phmr_pt2.4` env | |
-| | run `boxing_short.mp4` demo | |
-| | clone SAM-Body4D | |
-| | install `body4d` env | |
-| | accept HF gates (SAM-3, SAM-3D-Body) | |
-| | run bundled Gradio demo | |
-| | smoke test `adiTest` end-to-end | |
-| | smoke test `loveTest` end-to-end | |
+| 2026-04-18 | Box-side preflight on Lambda A100 (SSH, push, miniforge, tmux) | OK — see `_agent_log.md` "2026-04-18 — box-side preflight" |
+| 2026-04-18 | clone PromptHMR (Task 5 step 1) | |
+| 2026-04-18 | install `phmr_pt2.4` env (Task 5 step 2) | |
+| 2026-04-18 | rsync cached body_models from Mac (replaces `fetch_smplx.sh`) | |
+| 2026-04-18 | run `fetch_data.sh` + BEDLAM2 ckpt (Task 5 step 3) | |
+| 2026-04-18 | run `boxing_short.mp4` demo (Task 5 step 4 — milestone gate A) | |
+| 2026-04-18 | Task 6 — PromptHMR mask sidecar | |
+| 2026-04-18 | Task 7 — PromptHMR-Vid sidecar | |
+| 2026-04-18 | Task 8 — `body4d` env + Gradio demo (milestone gate B) | |
+| 2026-04-18 | accept HF gate (`facebook/sam-3d-body-dinov3` only — SAM-3 skipped) | |
+| 2026-04-18 | Task 9 — SAM-Body4D sidecar | |
+| 2026-04-18 | Task 10 — COCO-17 joint extraction | |
+| 2026-04-18 | Task 11 — comparison harness (milestone gate C — `side_by_side.mp4`) | |
+| 2026-04-18 | Task 12 — orchestrator | |
+| 2026-04-18 | Task 13 — adiTest end-to-end (milestone gate D) | |
+| 2026-04-18 | Task 13 — loveTest + remaining 7 clips (milestone gate E) | |
+| 2026-04-18 | Task 14 — optional HTML report | |
+
+### Handoff-to-plan task mapping (recorded 2026-04-18)
+
+The Lambda hand-off note grouped the remaining work into 10 informally-numbered
+items ("handoff Tasks 5–14"). Those numbers do NOT match the plan's Tasks 5–14
+because the hand-off summarised some plan tasks together and inserted a
+"per-track JSON converter" that has no plan-task equivalent. We follow the
+**plan's numbering verbatim** and treat the hand-off list as a milestone-gate
+description. The mapping is:
+
+| Hand-off label | Plan task(s) | Operator-report milestone |
+|---|---|---|
+| "Task 5: PromptHMR env + boxing demo" | Plan Task 5 | A |
+| "Task 6: Body4D env + Gradio demo" | Plan Task 8 | B |
+| "Task 7: Per-track JSON converter (TDD)" | (no plan equivalent — folded into plan Task 9 if needed) | — |
+| "Task 8: PromptHMR-Vid sidecar runner" | Plan Tasks 6 + 7 | — |
+| "Task 9: SAM-Body4D wrapper (sam3 monkey-patch)" | Plan Task 9 step 1 | — |
+| "Task 10: SAM-Body4D sidecar runner" | Plan Task 9 (rest) + Task 10 | — |
+| "Task 11: Comparison stage (Stage D)" | Plan Task 11 | C |
+| "Task 12: Multi-clip orchestrator" | Plan Task 12 | — |
+| "Task 13: End-to-end smoke on adiTest" | Plan Task 13 (adiTest only) | D |
+| "Task 14: loveTest + rest of 8 clips + report" | Plan Task 13 (remaining clips) + Plan Task 14 | E |
+
+Other hand-off corrections recorded in `_agent_log.md`:
+- SAM-Body4D upstream URL: hand-off said `facebookresearch/sam-body4d` (404).
+  Plan §9 already lists the correct `gaomingqi/sam-body4d`; we follow the plan.
+- HF gate: only `facebook/sam-3d-body-dinov3` is accepted (the SAM-3 gate is
+  skipped per plan §10 question 3 and Task 9 step 1's monkey-patch).
+- Lambda variant: A100-SXM4-**40 GB** (hand-off §3 said 80 GB). Per plan §6
+  risks + §10 question 1, we try `completion.enable=true` first per clip and
+  fall back to `--disable-completion` only on OOM, recording VRAM peaks in
+  `_agent_log.md`.
 

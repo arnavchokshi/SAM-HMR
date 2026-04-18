@@ -143,3 +143,82 @@ When the IP is ready, paste it in chat and the agent will:
 - Build the two conda envs (Tasks 5 & 6)
 - Re-run Stage A on adiTest from the box (~10 s on A100)
 - Continue Tasks 7-14
+
+---
+
+## 2026-04-18 — Box-side preflight (Lambda A100, IP 150.136.209.7)
+
+New session. Operator handed off Tasks 5–14 with explicit pre-flight checklist
+and gate-stop policy (handoff §5, §9). Box-side preflight outcomes:
+
+### Pre-flight findings
+
+- **GPU:** `NVIDIA A100-SXM4-40GB`, NOT 80 GB as hand-off §3 stated.
+  Driver 580.126.09, CUDA-13.0 compat (works for both cu121 and cu118
+  PyTorch wheels). Box was idle (0 MiB VRAM, no other GPU processes).
+- **Compute:** 30 vCPU, 216 GiB RAM, 484 GB free on `/`.
+- **Other agent / user:** `~/dance_bench/` (5.9 GB — `uv .venv`, `repo/`,
+  `clips/{adiTest,gymTest,BigTest}/gt`). Confined my work to `~/code/`,
+  `~/checkpoints/`, `~/work/`, `~/miniforge3/`. No conflicts expected.
+- **Conda:** none installed at session start. Installed Miniforge3
+  (`conda 26.1.1`, `mamba 2.5.0`) into `~/miniforge3/`. `conda init bash`
+  added the activate hook to `~/.bashrc`.
+- **tmux:** session `arnav-3d` started for long-running installs.
+- **GitHub auth:** SAM-HMR repo is public. Box can `git ls-remote` without
+  credentials. No deploy key needed.
+
+### Operator decisions (recorded from session-start AskQuestion)
+
+1. **Push:** operator authorised the agent to `git push -u origin main` from
+   the Mac (overrides the previous "operator pushes" rule). Done — origin
+   head now `f0c921a`.
+2. **HF token:** gate accepted for `facebook/sam-3d-body-dinov3` (operator
+   confirmed "accepted" status in Hugging Face settings). Read token issued
+   and pasted into chat for use on the box (will be consumed via
+   `huggingface-cli login --token …`; never written to a tracked file).
+   Operator should rotate the token when the project ends.
+3. **SMPL credentials:** operator has both SMPL-X and SMPL accounts but
+   prefers we reuse cached body models. Spotlight (`mdfind`) located a
+   complete tree at:
+   - `/Users/arnavchokshi/Desktop/sway_pose_mvp/PromptHMR/data/body_models/`
+     (smpl/{NEUTRAL,MALE,FEMALE}.pkl real files; smplx/ symlink to
+     `~/Desktop/sway_pose_mvp/models/smplx_body/models/smplx/`; plus
+     `J_regressor_h36m.npy`, `smpl_mean_params.npz`, `smplx2smpl.pkl`,
+     `smplx2smpl_joints.npy`).
+   - `~/Desktop/sway_PHMR old Checkpoint/sync_body_models_to_lambda.sh`
+     already exists (a prior sync script using `rsync -L` to deref symlinks).
+   We will rsync this tree to the box and **skip** `bash scripts/fetch_smplx.sh`
+   in plan Task 5 step 3 — saves ~30 min and avoids the interactive license
+   prompts.
+4. **Task numbering:** follow the plan's numbering verbatim; the hand-off
+   §6 list is treated as milestone-gate descriptions, not a renumbering.
+   Mapping table written into plan §11. Operator-report milestones A–E
+   correspond to plan Tasks 5, 8, 11, 13(adiTest), 13(loveTest)+14 — see
+   plan §11 mapping table.
+5. **GPU 40 GB strategy:** try `completion.enable=true` first per clip; on
+   OOM, fall back to `--disable-completion` for that clip and record the
+   VRAM peak that triggered the fallback. Document per-clip outcomes in
+   the §11 operator log table.
+
+### Hand-off corrections caught during preflight
+
+- Hand-off §6 / §9: SAM-Body4D upstream URL given as
+  `facebookresearch/sam-body4d` (404). The plan §9 already correctly lists
+  `gaomingqi/sam-body4d` (master branch, 299★, arXiv 2512.08406). We use
+  the plan's URL. No plan edit needed.
+- Hand-off §3: GPU stated as 80 GB but actually 40 GB — see "GPU strategy"
+  decision above. Plan §10 question 1 already enumerates both variants and
+  the 40 GB mitigation.
+
+### Commits this session (preflight only — no code yet)
+
+- (pending) `docs(plan): record 2026-04-18 box-side preflight + handoff mapping`
+
+### Open questions for the user
+
+- (none currently — all blockers resolved)
+
+### Next actions
+
+Proceed to plan Task 5 step 1 (clone PromptHMR into `~/code/PromptHMR/` on
+the box) inside the `arnav-3d` tmux session.
