@@ -2591,25 +2591,34 @@ The dual pipeline is "shipped" when:
 
 These are quick checks the human operator should do once before Task 1:
 
-1. **Which CUDA box do we use?** PromptHMR-Vid wants cu121 or cu126;
-   SAM-Body4D wants cu118. A single H100 with cu121 will work for
-   PromptHMR but needs a separate cu118 conda env for SAM-Body4D. If
-   you only have one CUDA driver version available, plan two pip
-   indices, not two driver installs.
-2. **Where does Stage A live?** It can run on Apple Silicon, but the
-   `runs/3d_compare/<clip>/intermediates/frames/` artifacts then need
-   to be `rsync`-ed to the CUDA box for Stages B/C/D. Cleanest is to
-   run *all four* stages on the CUDA box (the tracking env is small
-   and works on Linux+CUDA fine).
-3. **Do we want the HF gated SAM-3 checkpoint?** SAM-Body4D's repo
-   *requires* it for the bundled Gradio demo, but our wrapper doesn't
-   actually call SAM-3 (we substitute our SAM-2 masks). We can monkey-
-   patch `build_sam3_from_config` to a no-op (already in the plan,
-   Task 9 step 1) and skip the SAM-3 download entirely. Decide whether
-   to bother accepting the gate.
-4. **Where do we host the checkpoints long-term?** ~30 GB of model
-   weights across both systems. Confirm `~/checkpoints/` has space
-   *and* that the box has bandwidth to pull all of them in one shot.
+1. **Which CUDA box do we use?** **DECIDED 2026-04-17: Lambda Cloud A100
+   instance** (operator just provisioned). PromptHMR-Vid wants cu121 or
+   cu126; SAM-Body4D wants cu118. Lambda's default Ubuntu 22.04 image
+   ships with the CUDA 12.x driver stack which works for PromptHMR; for
+   SAM-Body4D we use a `body4d` conda env with the cu118 PyTorch wheels
+   (the cu118 wheels run fine on a cu121 driver — only the *driver*
+   needs to be ≥12.0, the *runtime* CUDA can be older). Variant note:
+   on **A100 80 GB** all 8 clips fit (loveTest still needs per-track
+   batching ≤5 IDs); on **A100 40 GB** SAM-Body4D's completion-on path
+   OOMs for 5+ dancer clips and we have to fall back to
+   `--disable-completion` for adiTest / loveTest / BigTest.
+2. **Where does Stage A live?** **DECIDED: run all four stages on the
+   Lambda A100.** Stage A code already runs there (boxmot + ultralytics
+   + torch-cuda are easy installs). Avoids `rsync` of the
+   `intermediates/frames/` 188-image folders per clip across the WAN.
+   The current Mac-side `runs/3d_compare/adiTest/intermediates/` was
+   only generated to smoke-test Task 4; we will regenerate on the box.
+3. **Do we want the HF gated SAM-3 checkpoint?** **DECIDED: skip it.**
+   Our wrapper substitutes our SAM-2 masks and the plan's Task 9 step 1
+   monkey-patches `build_sam3_from_config` to a no-op. We *do* still
+   need to accept the gate for `facebook/sam-3d-body-dinov3` (used for
+   the per-frame mesh fit). One HF gate accept, not two.
+4. **Where do we host the checkpoints long-term?** **DECIDED: `~/checkpoints/`
+   on the A100's local SSD.** Lambda On-Demand instances have 1.4–4 TB
+   ephemeral NVMe — plenty for ~30 GB of weights + intermediates. If we
+   later want to stop/start the instance without re-downloading
+   checkpoints, attach a Lambda Persistent Storage Filesystem and
+   symlink `~/checkpoints` into it; not needed for this session.
 
 ---
 

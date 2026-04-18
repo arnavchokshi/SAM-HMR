@@ -15,8 +15,12 @@ env/
 .vscode/
 .idea/
 
-# Run outputs (large; reproducible from data + scripts)
-runs/
+# Run outputs (large; reproducible from data + scripts).
+# Use runs/* (not runs/) so the !exception below can re-include the agent log.
+runs/*
+!runs/3d_compare/
+runs/3d_compare/*
+!runs/3d_compare/_agent_log.md
 
 # Weights / model checkpoints (large; fetched via scripts/fetch_*.sh)
 weights/
