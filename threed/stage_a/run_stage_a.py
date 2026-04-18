@@ -28,6 +28,9 @@ def main(argv=None) -> int:
                    help="Path to runs/<run>/_cache/<clip> with one .pkl inside")
     p.add_argument("--min-total-frames", type=int, default=60)
     p.add_argument("--min-conf", type=float, default=0.38)
+    p.add_argument("--max-frames", type=int, default=None,
+                   help="Cap frame extraction at N frames. None or <=0 "
+                        "means decode the entire clip.")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -35,12 +38,14 @@ def main(argv=None) -> int:
     cfg = default_config()
     dirs = cfg.clip_dirs(args.clip).ensure()
 
-    log.info("[%s] extracting frames from %s", args.clip, args.video)
+    log.info("[%s] extracting frames from %s (max_frames=%s)",
+             args.clip, args.video, args.max_frames)
     n_frames = extract_frames(
         args.video,
         out_dir_resized=dirs.intermediates / "frames",
         out_dir_full=dirs.intermediates / "frames_full",
         max_height=cfg.max_height,
+        max_frames=args.max_frames,
     )
     log.info("[%s] wrote %d frames", args.clip, n_frames)
 

@@ -63,14 +63,24 @@ def build_stage_a_cmd(
     clip: str,
     video: Path,
     cache_dir: Path,
+    max_frames: Optional[int] = None,
 ) -> List[str]:
-    """Build the Stage A subprocess command (runs in host env)."""
-    return [
+    """Build the Stage A subprocess command (runs in host env).
+
+    ``max_frames`` (default ``None``) caps how many frames Stage A
+    decodes/extracts so downstream PHMR + body4d cost stays bounded for
+    long clips. Use this to keep new-clip wall in line with adiTest's
+    188-frame baseline.
+    """
+    cmd = [
         str(python), "-m", "threed.stage_a.run_stage_a",
         "--clip", clip,
         "--video", str(video),
         "--cache-dir", str(cache_dir),
     ]
+    if max_frames is not None:
+        cmd.extend(["--max-frames", str(max_frames)])
+    return cmd
 
 
 def build_phmr_masks_cmd(
@@ -257,6 +267,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help="Override sam_3d_body.batch_size.")
     p.add_argument("--fps", type=int, default=30,
                    help="Frame rate written into the side-by-side mp4.")
+    p.add_argument("--max-frames", type=int, default=None,
+                   help="Cap Stage A frame extraction to the first N frames "
+                        "of the video. Keeps long clips comparable with "
+                        "adiTest's 188-frame baseline. Forwarded to Stage A "
+                        "only; ignored when --skip-stage-a is set (in which "
+                        "case the existing intermediates dictate the cap).")
     p.add_argument("--skip-stage-a", action="store_true")
     p.add_argument("--skip-phmr", action="store_true")
     p.add_argument(
@@ -309,6 +325,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 clip=args.clip,
                 video=args.video,
                 cache_dir=args.cache_dir,
+                max_frames=args.max_frames,
             ),
             cwd=REPO_ROOT,
         )

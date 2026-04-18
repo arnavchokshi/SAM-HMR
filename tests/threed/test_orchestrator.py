@@ -58,6 +58,28 @@ class TestStageACmd:
         assert "--clip" in cmd and "adiTest" in cmd
         assert "--video" in cmd and "/tmp/foo.mov" in cmd
         assert "--cache-dir" in cmd
+        assert "--max-frames" not in cmd  # default unset
+
+    def test_max_frames_forwarded_when_set(self, orch, fake_dirs, tmp_path):
+        cmd = orch.build_stage_a_cmd(
+            python=Path("/usr/bin/python"),
+            clip="loveTest",
+            video=Path("/tmp/foo.mov"),
+            cache_dir=tmp_path / "cache",
+            max_frames=188,
+        )
+        assert "--max-frames" in cmd
+        assert "188" in cmd
+
+    def test_max_frames_none_means_no_flag(self, orch, fake_dirs, tmp_path):
+        cmd = orch.build_stage_a_cmd(
+            python=Path("/usr/bin/python"),
+            clip="loveTest",
+            video=Path("/tmp/foo.mov"),
+            cache_dir=tmp_path / "cache",
+            max_frames=None,
+        )
+        assert "--max-frames" not in cmd
 
 
 class TestPromptHmrCmds:
