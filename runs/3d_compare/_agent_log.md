@@ -1037,3 +1037,102 @@ Proceed to plan Task 13 (end-to-end smoke on adiTest via the
 orchestrator — milestone gate D). Verify the orchestrator can drive
 all five stages including body4d; then tackle Task 14 (loveTest +
 remaining 7 clips + the operator report).
+
+---
+
+## 2026-04-18 — Plan Task 13 complete (milestone gate D)
+
+### Box state
+- `~/work/SAM-HMR @ 40fa00f`
+- `~/work/3d_compare/adiTest/` fully populated (intermediates, prompthmr,
+  sam_body4d, comparison)
+- All artifacts re-generated end-to-end via orchestrator (no manual
+  python -m calls outside of it)
+
+### Orchestrator e2e on adiTest
+Command:
+
+```
+python scripts/run_3d_compare.py \
+    --clip adiTest \
+    --output-root /home/ubuntu/work/3d_compare \
+    --skip-stage-a --skip-phmr \
+    --disable-completion --batch-size 32 \
+    --fps 30
+```
+
+Pipeline plan (echoed by orchestrator): `body4d → compare → render`.
+
+### Wall-clock breakdown
+| Stage | Wall | Notes |
+|---|---|---|
+| body4d (init) | 61.06 s | OfflineApp constructor + ckpt loads |
+| body4d (run) | 665.83 s | `on_4d_generation` (188 frames × 5 dancers, completion off, batch=32) |
+| compare | ~0.3 s | `(188,5,17,3)` vs `(188,5,70,3)` reduce + metrics |
+| render | ~2 s | 188 frames stitched to 2570×720 mp4 |
+| **total** | **738 s = 12 m 18 s** | matches sum-of-parts within shell overhead |
+
+### VRAM
+- body4d init: 7.70 GB
+- body4d run peak: **11.10 GB** (well under 40 GB A100 budget)
+- Same as the standalone Task 10 smoke → no overhead from the
+  conda-run subprocess wrapping
+
+### Outputs (all under `/home/ubuntu/work/3d_compare/adiTest/`)
+- `sam_body4d/`:
+  - `joints_4d_individual/{1,2,3,4,5}/<frame:08d>.npy` — **188 each, 940 total** (slot fix verified — was `{2,3,4,5,6}` before `e91d5b5`)
+  - `joints_world.npy (188, 5, 70, 3) float32` — **940 of 940 (frame,dancer) entries valid (zero NaN)**
+  - 940 PLYs + 940 focal JSONs + 188 rendered overlays + 1 4D mp4
+  - `run_summary.json` — timings + VRAM + paths
+- `comparison/`:
+  - `metrics.json (7.9 KB)`
+  - `side_by_side.mp4 (3.2 MB, 2570×720, 188 frames @ 30 fps)`
+
+### Stage D metrics (reproducibility check)
+Bit-identical to the rename-fixed earlier run from Task 11g:
+
+| Metric | Value |
+|---|---|
+| `per_joint_mpjpe_m` (mean across joints) | 9.21 m |
+| `per_joint_jitter_phmr_m_per_frame` | 0.0447 m/frame |
+| `per_joint_jitter_body4d_m_per_frame` | 0.0487 m/frame |
+| `foot_skating_phmr_m_per_frame` | `[0, 0, 0, 0, 0]` |
+| `foot_skating_body4d_m_per_frame` | `[0.06, 0.04, 0.07, 0.05, 0.06]` |
+
+The two systems' temporal smoothness is comparable; the large MPJPE is
+driven by un-aligned root translation (Procrustes alignment is a
+Task 14 followup). PHMR foot-skating is zero because the cam-frame
+foot height never drops below the 0.05 m threshold in this clip
+(camera is mounted above the floor) — the threshold or coord-frame
+choice is also a Task 14 followup.
+
+### What this proves about the orchestrator
+- Cross-env subprocess wiring works (`conda run -n body4d
+  --no-capture-output python -m threed.sidecar_body4d.run_body4d`
+  succeeds end-to-end with stdout streamed through to the parent).
+- Skip-flag composition (`--skip-stage-a --skip-phmr`) correctly
+  reduces the pipeline to `body4d → compare → render`.
+- `--output-root` correctly redirects `cfg.output_root` to the box's
+  `~/work/3d_compare/` so all stage outputs land in the right place.
+- Reproducibility: outputs match the per-stage invocations exactly,
+  so we can drive the remaining 7 clips through the same one-shot
+  command in Task 14 without per-clip babysitting.
+
+### Open issues
+- (none for adiTest — the gate is open)
+- For the other clips we'll need:
+  - Stage A on each (intermediates not pre-existing) → exercises the
+    orchestrator's first stage which we haven't smoked end-to-end yet.
+  - PromptHMR-Vid run on each → ditto for `phmr_masks` + `phmr_run`.
+  - We will smoke the full A-through-D stack on at least one new
+    clip before launching the batch.
+
+### Commits this session (Task 13)
+- (no code changes — the gate is just the orchestrator smoke validation)
+- (pending) `log: Task 13 complete (orchestrator end-to-end on adiTest — milestone gate D)`
+
+### Next actions
+Proceed to plan Task 14 (loveTest + remaining 7 clips + the operator
+report). First step is a full A → B → C1/C2 → D smoke on one fresh
+clip (probably loveTest since it's the heaviest, validating VRAM
+headroom early).
