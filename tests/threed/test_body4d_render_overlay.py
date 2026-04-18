@@ -107,14 +107,15 @@ class TestLoadFocalMeta:
 class TestBody4dDancerWorldPos:
     """Mirrors SAM-Body4D's ``camera_translation[0] *= -1`` convention.
 
-    Upstream's :class:`Renderer` puts the camera at
-    ``(-cam_t.x, cam_t.y, cam_t.z)`` and the mesh at world origin
-    (after a 180° X-axis flip). For a single pyrender scene with **all**
-    dancers, we instead place the camera at the world origin and shift
-    each dancer to where they appear in the OpenGL camera frame:
-    ``(cam_t.x, -cam_t.y, -cam_t.z)``. This helper computes that
-    placement so the multi-dancer scene matches upstream's per-dancer
-    output pixel-for-pixel.
+    Upstream's :class:`Renderer` puts the camera at world position
+    ``(-cam_t.x, cam_t.y, cam_t.z)`` and consumes the PLY vertices
+    as-is (they're already in that "post-flip world" — saved by
+    upstream's :func:`vertices_to_trimesh` as
+    ``(pred_verts + cam_t) * [1, -1, -1]``). For a single pyrender
+    scene with **all** dancers we move the camera to the world origin
+    and translate each dancer by ``-camera_world``, i.e.
+    ``+(cam_t.x, -cam_t.y, -cam_t.z)``. This helper returns that
+    translation so callers can add it directly to the PLY vertices.
     """
 
     def test_shape_and_dtype(self):
@@ -131,18 +132,35 @@ class TestBody4dDancerWorldPos:
 
     def test_negative_x_stays_negative(self):
         """Per SAM-Body4D's convention, the X sign is flipped twice (once when
-        upstream negates camera.x, once when we shift the dancer to the OpenGL
-        camera frame), netting to: dancer.x equals cam_t.x.
+        upstream negates ``camera.x``, once when we shift the dancer to the
+        camera-at-origin frame), netting to: dancer translation X equals
+        ``cam_t.x``.
         """
         cam_t = np.array([-1.639, 1.717, 3.168], dtype=np.float32)
         out = body4d_dancer_world_pos(cam_t)
         np.testing.assert_allclose(out, [-1.639, -1.717, -3.168])
 
-    def test_zero_camera_zero_position(self):
-        """A camera at the model origin places the dancer at the world origin —
-        a useful sanity check, even if SAM-Body4D never produces that."""
+    def test_zero_camera_zero_translation(self):
+        """A camera at the model origin yields a zero translation —
+        useful sanity check, even if SAM-Body4D never produces that."""
         out = body4d_dancer_world_pos(np.zeros(3, dtype=np.float32))
         np.testing.assert_array_equal(out, np.zeros(3, dtype=np.float32))
+
+    def test_translation_matches_negated_upstream_camera(self):
+        """The returned translation must equal ``-(upstream camera_world)``
+        so that ``v_PLY + translation`` puts the dancer in a frame where
+        the shared camera is at the world origin.
+
+        ``upstream_camera_world = (-cam_t.x, cam_t.y, cam_t.z)`` (per
+        SAM-Body4D's :class:`Renderer`); ``-upstream`` is exactly
+        ``(cam_t.x, -cam_t.y, -cam_t.z)``.
+        """
+        cam_t = np.array([0.7, 1.2, 4.5], dtype=np.float32)
+        upstream_camera_world = np.array([-cam_t[0], cam_t[1], cam_t[2]], dtype=np.float32)
+        np.testing.assert_allclose(
+            body4d_dancer_world_pos(cam_t),
+            -upstream_camera_world,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -151,15 +169,14 @@ class TestBody4dDancerWorldPos:
 
 
 class TestFlipYzVerts:
-    """Flips Y/Z signs of mesh vertices to convert between OpenCV-style
-    coordinates (Y down, Z forward) and OpenGL/pyrender (Y up, Z back).
+    """Flips Y/Z signs of mesh vertices — equivalent to a 180° X-rotation.
 
-    The body4d PLYs as-emitted by SAM-Body4D's saver are in upstream's
-    "model" frame; pyrender expects OpenGL. The 180° X-axis rotation
-    upstream's :class:`Renderer` applies to the trimesh is exactly this
-    flip — we perform it once on the input vertices instead of going
-    through trimesh.transformations to keep the helper trivial to test
-    without requiring trimesh.
+    Generic geometry helper. Not used by the body4d overlay path
+    (PLYs come out of SAM-Body4D's :func:`vertices_to_trimesh`
+    already 180°-X-rotated so they're consumed as-is), but kept and
+    tested as a standalone utility because the same convention
+    conversion is common when bridging OpenCV-style and OpenGL-style
+    coordinates.
     """
 
     def test_shape_preserved(self):

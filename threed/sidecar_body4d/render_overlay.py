@@ -116,20 +116,24 @@ def load_focal_meta(json_path: Path) -> Tuple[float, np.ndarray]:
 
 
 def body4d_dancer_world_pos(cam_t: np.ndarray) -> np.ndarray:
-    """Place a dancer in the OpenGL camera frame (camera at origin).
+    """Translation to apply to a PLY's vertices for the shared-camera scene.
 
     SAM-Body4D's :class:`Renderer` puts the **camera** at
-    ``(-cam_t.x, cam_t.y, cam_t.z)`` and the **mesh** at the world
-    origin (after a 180° X-axis flip). Our multi-dancer scene puts the
-    camera at the origin and the dancer at the position they would
-    occupy in that camera's frame — i.e.
-    ``mesh_world = -camera_world = (cam_t.x, -cam_t.y, -cam_t.z)``.
+    ``(-cam_t.x, cam_t.y, cam_t.z)`` and consumes the PLY vertices
+    as-is (they were already saved in that "post-flip world" frame by
+    upstream's :func:`vertices_to_trimesh` —
+    ``(pred_verts + cam_t) * [1, -1, -1]``).
 
-    Both pipelines yield identical pixel projections; we use the
-    camera-at-origin form because it lets us put **all** dancers in a
-    single pyrender scene with one camera, so cross-dancer occlusion
-    is depth-correct (the per-dancer Renderer call would composite via
-    alpha and lose depth between bodies).
+    For our multi-dancer scene we want the camera at the world origin
+    so all dancers can share one pyrender camera (depth-correct
+    cross-dancer occlusion). To put a dancer in that shared frame we
+    translate their PLY vertices by ``-camera_world``, i.e.
+    ``+(cam_t.x, -cam_t.y, -cam_t.z)``. The X sign comes out positive
+    because upstream first negates ``cam_t.x`` to get the camera
+    position; our ``-camera_world`` flips it back to ``+cam_t.x``.
+
+    Returns the per-dancer translation vector; callers add it to the
+    PLY vertices before adding the mesh to the scene.
     """
     cam_t = np.asarray(cam_t, dtype=np.float32)
     if cam_t.shape != (3,):
@@ -143,11 +147,13 @@ def body4d_dancer_world_pos(cam_t: np.ndarray) -> np.ndarray:
 def flip_yz_verts(verts: np.ndarray) -> np.ndarray:
     """Negate Y/Z of vertices — equivalent to a 180° rotation around X.
 
-    SAM-Body4D's :class:`Renderer` does this with
-    ``trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])``;
-    we collapse it to a sign-flip on the per-axis values to keep the
-    helper trivially testable without importing trimesh in the test
-    process.
+    Generic geometry helper. Not used by the body4d overlay path
+    (PLYs come out of SAM-Body4D's :func:`vertices_to_trimesh`
+    already 180°-X-rotated so they're consumed as-is), but kept as a
+    standalone utility because the same convention conversion is
+    common when bridging OpenCV-style and OpenGL-style coordinates.
+    Mirrors ``trimesh.transformations.rotation_matrix(np.radians(180),
+    [1, 0, 0])`` without requiring trimesh.
     """
     if verts.ndim != 2 or verts.shape[1] != 3:
         raise ValueError(f"verts must be (N, 3); got {verts.shape}")
@@ -174,16 +180,20 @@ def _build_pyrender_scene(
     Each entry in ``meshes_with_cam`` is a tuple
     ``(verts, faces, cam_t, color)``:
 
-    - ``verts``: ``(V, 3)`` mesh vertices in the dancer's model frame.
+    - ``verts``: ``(V, 3)`` mesh vertices straight off the PLY. These
+      are SAM-Body4D's ``vertices_to_trimesh`` output, i.e.
+      ``(pred_vertices + cam_t) * [1, -1, -1]`` — already in the
+      "post-flip" world that upstream's :class:`Renderer` consumes,
+      so we **don't** flip again here.
     - ``faces``: ``(F, 3)`` mesh faces.
-    - ``cam_t``: ``(3,)`` per-dancer camera translation (``pred_cam_t``
-      from SAM-Body4D).
+    - ``cam_t``: ``(3,)`` per-dancer ``pred_cam_t`` (the un-negated
+      original; we apply the X-negation inside
+      :func:`body4d_dancer_world_pos`).
     - ``color``: RGB triple in ``[0, 1]``.
 
-    Vertices are placed via :func:`body4d_dancer_world_pos` (so the
-    camera can sit at the world origin) and Y/Z-flipped via
-    :func:`flip_yz_verts` to land in the OpenGL frame pyrender
-    expects. The camera intrinsics use the shared per-frame focal +
+    Vertices are translated by :func:`body4d_dancer_world_pos` so all
+    dancers land in a shared frame with the camera at the world
+    origin. The camera intrinsics use the shared per-frame focal +
     image-centred principal point (``[W/2, H/2]``) — same convention
     upstream's :class:`Renderer` uses when ``camera_center`` is left
     as the default.
@@ -196,8 +206,7 @@ def _build_pyrender_scene(
         ambient_light=[0.4, 0.4, 0.4],
     )
     for verts, faces, cam_t, color in meshes_with_cam:
-        v = flip_yz_verts(verts)
-        v = v + body4d_dancer_world_pos(cam_t)[None, :]
+        v = verts.astype(np.float32, copy=True) + body4d_dancer_world_pos(cam_t)[None, :]
         mesh_tri = trimesh.Trimesh(vertices=v, faces=faces, process=False)
         material = pyrender.MetallicRoughnessMaterial(
             baseColorFactor=[float(color[0]), float(color[1]), float(color[2]), 1.0],
