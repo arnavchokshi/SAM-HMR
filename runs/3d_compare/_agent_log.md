@@ -1197,3 +1197,84 @@ from MoGe-2.
 ### Next actions
 Wait for user confirmation on Task 14 scope. The orchestrator and
 all stages are validated; the per-clip add is just runtime cost.
+
+---
+
+## 2026-04-18 — Followup #3: PromptHMR mesh overlays (closes black left panel)
+
+User flagged that the side-by-side video's left panel (PromptHMR-Vid)
+is solid black. Root cause: PromptHMR-Vid produces `world4d.{mcs,glb}`
+(3D scene) + `subject-*.smpl` per dancer + `results.pkl`, but **no**
+per-frame 2D mesh overlays — Stage D's renderer therefore had nothing
+to put in the left panel and fell back to blanks. This was already
+documented as REPORT.md open followup #3.
+
+### Decision
+Do **not** re-run PHMR (heavy GPU). Instead:
+1. Write `threed/sidecar_promthmr/render_overlay.py` that runs the
+   SMPL-X forward on the cached `results.pkl` and rasterises each
+   dancer's mesh onto the original RGB frame via headless `pyrender`.
+2. Wire it into the orchestrator as a new `phmr_render` stage between
+   `phmr_project` and `body4d`. Add `--skip-phmr-render` for Stage D
+   iteration.
+3. Auto-detect `prompthmr/rendered_frames/` on disk in the final
+   `render` step so the side-by-side stitch picks it up automatically.
+
+Both conda envs already had `pyrender 0.1.45` so no new deps.
+
+### TDD discipline
+- 5 pure helpers (color palette, axis-angle conversion, intrinsics
+  matrix, frame indexing, alpha composite) → 26 unit tests in
+  `tests/threed/test_promthmr_render_overlay.py`. All green locally
+  with just numpy + scipy + cv2 (no torch/smplx/pyrender required).
+- 3 new tests in `tests/threed/test_orchestrator.py` for the new
+  command builder + `--skip-phmr-render` interactions. 18/18 green.
+
+### Bug fixes during box smoke
+1. **smplx `pose2rot=False` shape error** — `RuntimeError: shape
+   '[564, -1, 3, 3]' is invalid for input of size 92496`. The smplx
+   package re-validates the per-part rotation-matrix layout
+   internally; it's safer to convert to axis-angle first. Fix:
+   `_smplx_verts_per_dancer` uses the existing tested
+   `pose_axis_angle_from_rotmat` helper. Commit `8ee06cb`.
+2. **PHMR zero face-rotmats** — `ValueError: Non-positive determinant
+   ... in rotation matrix 25`. PromptHMR leaves `jaw/leye/reye`
+   (slots 22/23/24) as all-zero 3×3 matrices; scipy's `from_matrix`
+   refuses det=0. Fix: `pose_axis_angle_from_rotmat` substitutes
+   identity for any rotmat with det < 1e-3 (matches the upstream
+   pattern of zeroing face joints in the smplx forward call). 2 new
+   tests pin the behaviour. Commit `9e8e531`.
+
+### Box receipt — adiTest re-render
+```
+phmr_render (smplx + pyrender):  25 s wall, 188 frames, 5 dancers, 1280x720
+re-stitch (compare + render):     4 s wall
+side_by_side.mp4:                 8.3 MB (was 3.2 MB), 2570x720 @ 30 fps
+prompthmr/rendered_frames/:       188 JPGs, ~170 KB each
+```
+
+### Architecture decision: design boundary on `--skip-phmr`
+Kept `--skip-phmr` as a "skip every PHMR stage including render"
+shortcut and gated `phmr_render` behind both `--skip-phmr` and
+`--skip-phmr-render`. Trade-off: a user who has cached `results.pkl`
+but wants to re-render must bypass the orchestrator (call
+`render_overlay` directly) — but the more common path (full clip
+or pure Stage D iteration) stays clean. Documented in the
+orchestrator docstring + `runs/3d_compare/REPORT.md` §2.5.
+
+### Test totals
+- Before: 161 passed, 3 skipped
+- After:  176 passed, 3 skipped (+15 across `test_promthmr_render_overlay.py`
+  +`test_orchestrator.py`)
+
+### Commits this section
+- `ab711a0` feat(sidecar_promthmr): add per-frame SMPL-X mesh-overlay renderer
+- `8ee06cb` fix(sidecar_promthmr): use axis-angle path for smplx forward
+- `9e8e531` fix(sidecar_promthmr): handle PHMR zero face-rotmats in axis-angle conv
+
+### Next actions
+Followup #1 (Procrustes-aligned MPJPE) has stub tests in
+`tests/threed/test_compare_metrics.py` but no implementation yet —
+that's the natural next item. Until then the headline MPJPE in
+REPORT.md remains 9.21 m and is dominated by global scale/origin
+misalignment between the two coord systems.
