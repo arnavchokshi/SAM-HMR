@@ -742,6 +742,21 @@ from .io import TrackEntry, save_tracks, load_tracks  # noqa: F401
 Create `tests/threed/__init__.py` as an empty file so pytest discovers
 the tests as a package.
 
+Modern pytest (8.x) does **not** add the project root to `sys.path`
+automatically — even with `__init__.py` files present. Without explicit
+`pythonpath` config, `from threed.config import ...` raises
+`ModuleNotFoundError`. Add a minimal `pyproject.toml` at the repo root:
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+```
+
+(If a `pyproject.toml` already exists in your checkout, just add the
+`[tool.pytest.ini_options]` block to it.)
+
 - [ ] **Step 6: Run tests to verify they pass**
 
 ```bash
