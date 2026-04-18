@@ -240,7 +240,15 @@ class TestMonkeypatchSaveMeshResults:
         assert len(m._calls) == 1, "original save_mesh_results MUST still be called"
         assert m._calls[0]["image_path"] == "/tmp/00000007.jpg"
 
-    def test_writes_one_npy_per_person(self, tmp_path: Path):
+    def test_writes_one_npy_per_person_using_pid_plus_one(self, tmp_path: Path):
+        """Slot index must mirror upstream PLY layout: ``mesh_4d_individual/<pid+1>/...ply``.
+
+        We deliberately pass an ``id_current`` whose values differ from
+        ``pid+1`` (e.g. ``[10, 20]`` -> pids 0,1 -> slots 1,2) to lock
+        in the slot semantics. If the wrapper ever regresses to using
+        ``id_current[pid]`` we'll get dirs ``11`` and ``21`` and this
+        test will fail loudly.
+        """
         m = self._build_fake_module()
         joints_dir = tmp_path / "joints"
         monkeypatch_save_mesh_results(m, joints_dir)
@@ -250,13 +258,15 @@ class TestMonkeypatchSaveMeshResults:
         ]
         m.save_mesh_results(
             outputs, faces=None, save_dir="/tmp/s", focal_dir="/tmp/f",
-            image_path="/tmp/clip/00000042.jpg", id_current=[0, 4],
+            image_path="/tmp/clip/00000042.jpg", id_current=[10, 20],
         )
-        f1 = joints_dir / "1" / "00000042.npy"
-        f5 = joints_dir / "5" / "00000042.npy"
-        assert f1.is_file() and f5.is_file()
-        np.testing.assert_array_equal(np.load(f1), np.full((70, 3), 1.0, dtype=np.float32))
-        np.testing.assert_array_equal(np.load(f5), np.full((70, 3), 2.0, dtype=np.float32))
+        slot1 = joints_dir / "1" / "00000042.npy"
+        slot2 = joints_dir / "2" / "00000042.npy"
+        assert slot1.is_file() and slot2.is_file()
+        assert not (joints_dir / "11").exists()
+        assert not (joints_dir / "21").exists()
+        np.testing.assert_array_equal(np.load(slot1), np.full((70, 3), 1.0, dtype=np.float32))
+        np.testing.assert_array_equal(np.load(slot2), np.full((70, 3), 2.0, dtype=np.float32))
 
     def test_idempotent(self, tmp_path: Path):
         m = self._build_fake_module()
@@ -292,14 +302,20 @@ class TestMonkeypatchSaveMeshResults:
 
 
 class TestConsolidateJointsNpy:
-    def test_packs_per_track_per_frame(self, tmp_path: Path):
+    def test_packs_per_slot_per_frame(self, tmp_path: Path):
+        """Slots are 1..len(tids) regardless of the underlying tid values.
+
+        Pass non-trivial tid values (``[1, 3]``) but write under slot
+        dirs ``1, 2`` (matching the PLY layout). Output dancer axis
+        order MUST follow ``tids`` (slot 1 -> tids[0]=1, slot 2 -> tids[1]=3).
+        """
         joints_dir = tmp_path / "joints"
-        for tid in (1, 3):
-            (joints_dir / str(tid)).mkdir(parents=True)
+        for slot in (1, 2):
+            (joints_dir / str(slot)).mkdir(parents=True)
         for f in (0, 1, 2):
             np.save(joints_dir / "1" / f"{f:08d}.npy",
                     np.full((70, 3), float(f), dtype=np.float32))
-            np.save(joints_dir / "3" / f"{f:08d}.npy",
+            np.save(joints_dir / "2" / f"{f:08d}.npy",
                     np.full((70, 3), float(f) + 100, dtype=np.float32))
         out = consolidate_joints_npy(joints_dir, tids=[1, 3], n_frames=3, n_joints=70)
         assert out.shape == (3, 2, 70, 3)
@@ -311,18 +327,31 @@ class TestConsolidateJointsNpy:
         (joints_dir / "1").mkdir(parents=True)
         np.save(joints_dir / "1" / "00000000.npy",
                 np.zeros((70, 3), dtype=np.float32))
-        out = consolidate_joints_npy(joints_dir, tids=[1], n_frames=3, n_joints=70)
+        out = consolidate_joints_npy(joints_dir, tids=[5], n_frames=3, n_joints=70)
         assert out.shape == (3, 1, 70, 3)
         assert not np.isnan(out[0]).any()
         assert np.isnan(out[1]).all()
         assert np.isnan(out[2]).all()
 
-    def test_missing_track_dir_all_nan(self, tmp_path: Path):
+    def test_missing_slot_dir_all_nan(self, tmp_path: Path):
         joints_dir = tmp_path / "joints"
         joints_dir.mkdir()
         out = consolidate_joints_npy(joints_dir, tids=[1, 2], n_frames=2, n_joints=70)
         assert out.shape == (2, 2, 70, 3)
         assert np.isnan(out).all()
+
+    def test_slot_indexing_independent_of_tid_values(self, tmp_path: Path):
+        """Even with non-contiguous tids (e.g. ``[7, 13]``) slots are still 1, 2."""
+        joints_dir = tmp_path / "joints"
+        (joints_dir / "1").mkdir(parents=True)
+        (joints_dir / "2").mkdir(parents=True)
+        np.save(joints_dir / "1" / "00000000.npy",
+                np.full((70, 3), 7.0, dtype=np.float32))
+        np.save(joints_dir / "2" / "00000000.npy",
+                np.full((70, 3), 13.0, dtype=np.float32))
+        out = consolidate_joints_npy(joints_dir, tids=[7, 13], n_frames=1, n_joints=70)
+        np.testing.assert_array_equal(out[0, 0, 0], np.full(3, 7.0, dtype=np.float32))
+        np.testing.assert_array_equal(out[0, 1, 0], np.full(3, 13.0, dtype=np.float32))
 
 
 class TestIterPaletteObjIds:

@@ -232,9 +232,14 @@ def monkeypatch_save_mesh_results(
        ``joints_dir/<tid>/<frame:08d>.npy`` with
        ``pred_keypoints_3d`` as ``np.float32``.
 
-    Track ID mirrors the upstream PLY layout: ``tid = id_current[pid] + 1``
-    so the joint files line up with ``mesh_4d_individual/<tid>/`` for
-    later consolidation by :func:`consolidate_joints_npy`.
+    Slot index mirrors the upstream PLY layout exactly: upstream writes
+    ``mesh_4d_individual/<pid+1>/...ply`` (see
+    ``models/sam_3d_body/notebook/utils.py:save_mesh_results``), where
+    ``pid`` is the enumerate index over ``outputs`` (NOT
+    ``id_current[pid]``, which is the actual obj_id and would
+    misalign by +1 in our DeepOcSort indexing). We use the same
+    ``pid+1`` here so :func:`consolidate_joints_npy` can stack joints
+    side-by-side with the meshes by directory name.
 
     Idempotent (sentinel-marked, same pattern as :func:`monkeypatch_sam3`).
     Defensive — if a future upstream change drops ``pred_keypoints_3d``
@@ -261,8 +266,8 @@ def monkeypatch_save_mesh_results(
                     f"frame={base}; skipping joint dump"
                 )
                 continue
-            tid = int(id_current[pid]) + 1
-            out_dir = joints_dir / str(tid)
+            slot = pid + 1
+            out_dir = joints_dir / str(slot)
             out_dir.mkdir(parents=True, exist_ok=True)
             np.save(out_dir / f"{base}.npy", np.asarray(kp, dtype=np.float32))
 
@@ -276,22 +281,27 @@ def consolidate_joints_npy(
     n_frames: int,
     n_joints: int = 70,
 ) -> np.ndarray:
-    """Pack per-(tid, frame) joint dumps into a single ``(T, N, J, 3)`` array.
+    """Pack per-(slot, frame) joint dumps into a single ``(T, N, J, 3)`` array.
 
-    Reads ``joints_dir/<tid>/<frame:08d>.npy`` for every (frame in
-    ``range(n_frames)``, tid in ``tids``) and stacks them into a single
-    NaN-padded array. Missing files become NaN — matches the convention
-    used by ``threed.sidecar_promthmr.run_promthmr_vid.joints_world_padded``
-    so Stage D's ``np.nanmean`` semantics work uniformly across pipelines.
+    Reads ``joints_dir/<slot>/<frame:08d>.npy`` for every (frame in
+    ``range(n_frames)``, slot in ``1..len(tids)``) and stacks them
+    into a single NaN-padded array. Slot indices match the upstream
+    PLY layout (``mesh_4d_individual/<pid+1>/...ply``) — see
+    :func:`monkeypatch_save_mesh_results`. The dancer axis (``N``)
+    is ordered by ``tids`` (the canonical sorted list); slot ``i+1``
+    corresponds to ``tids[i]``.
 
-    The dancer axis (``N``) is ordered by ``tids`` (use the canonical
-    sorted list). Joint count is fixed at MHR70 = 70 by default; pass
+    Missing files become NaN — matches the convention used by
+    ``threed.sidecar_promthmr.run_promthmr_vid.joints_world_padded``
+    so Stage D's ``np.nanmean`` semantics work uniformly across
+    pipelines. Joint count is fixed at MHR70 = 70 by default; pass
     ``n_joints=17`` if upstream pre-reduces to COCO-17 (we don't).
     """
     joints_dir = Path(joints_dir)
     out = np.full((n_frames, len(tids), n_joints, 3), np.nan, dtype=np.float32)
-    for di, tid in enumerate(tids):
-        sub = joints_dir / str(int(tid))
+    for di, _tid in enumerate(tids):
+        slot = di + 1
+        sub = joints_dir / str(slot)
         if not sub.is_dir():
             continue
         for f in range(n_frames):
