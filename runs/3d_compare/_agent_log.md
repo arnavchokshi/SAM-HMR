@@ -212,7 +212,8 @@ and gate-stop policy (handoff §5, §9). Box-side preflight outcomes:
 
 ### Commits this session (preflight only — no code yet)
 
-- (pending) `docs(plan): record 2026-04-18 box-side preflight + handoff mapping`
+- `docs(plan): record 2026-04-18 box-side preflight + handoff mapping`
+  (`runs/3d_compare/_agent_log.md` updates already committed in same set)
 
 ### Open questions for the user
 
@@ -222,3 +223,82 @@ and gate-stop policy (handoff §5, §9). Box-side preflight outcomes:
 
 Proceed to plan Task 5 step 1 (clone PromptHMR into `~/code/PromptHMR/` on
 the box) inside the `arnav-3d` tmux session.
+
+---
+
+## 2026-04-18 — Plan Task 5 complete (PromptHMR-Vid env + boxing smoke)
+
+### What ran on the box
+
+| Step | Wrapper script | tmux | Wall time | Outcome |
+| --- | --- | --- | --- | --- |
+| 5.1 clone | (manual `git clone`) | n/a | 12 s | `~/code/PromptHMR` HEAD `7d39d3f` |
+| 5.2 install | `~/work/run_task5_install.sh` | `arnav-3d` | ~6 min | conda env `phmr_pt2.4` created (Python 3.11, torch 2.4.0+cu121, CUDA 12.1, all PromptHMR deps + DROID-SLAM + Detectron2) |
+| 5.3a body models rsync | `scp` from Mac | n/a | ~6 min (3.37 GB) | `data/body_models/{smpl,smplx,*.npz,*.pkl}` populated from `/Users/arnavchokshi/Desktop/sway_pose_mvp/PromptHMR/data/body_models/`; `fetch_smplx.sh` skipped per operator decision |
+| 5.3b BEDLAM2 ckpt | `wget` (inside `run_task5_fetch.sh`) | `arnav-3d` | ~25 s | `data/pretrain/phmr_vid/phmr_b1b2.ckpt` (472 MB) |
+| 5.3c fetch_data.sh | `~/work/run_task5_fetch.sh` | `arnav-3d` | ~4.5 min | `phmr/`, `phmr_vid/`, `sam2_ckpts/`, `sam_vit_h_4b8939.pth` (2.4G), `vitpose-h-coco_25.pth` (2.4G), `camcalib_sa_biased_l2.ckpt` (288M), `droidcalib.pth` (16M), `examples/{boxing,boxing_short,dance_1,dance_2}.mp4` — 5.1 GB total |
+| 5.3d slim SMPLX npz | `gdown` (manual, after demo first run) | n/a | 2 s | `data/body_models/smplx/SMPLX_neutral_array_f32_slim.npz` (69 MB, gdrive id `1v9Qy7…`) — needed by GLB export, not pulled by `fetch_data.sh`/`fetch_smplx.sh` automatically |
+| 5.4 demo | `~/work/run_task5_demo.sh` then direct `convert_mcs_to_gltf` | `arnav-3d` | ~4 min wall (50 frames @ 25 fps, two boxers, `--static_camera`) | `results/boxing_short/{results.pkl 401K, world4d.mcs 44K, world4d.glb 66M, subject-{1,2}.smpl}` — gate A passed |
+
+### Key engineering decisions
+
+- **Did NOT swap to `phmr_b1b2.ckpt` for the smoke test.** Plan-correction
+  commit `8c9232e` (`docs(plan): correct phmr_vid ckpt switch instructions`)
+  documents that:
+  1. The yaml has no `pretrained_ckpt` key — the path is hardcoded in
+     `pipeline/phmr_vid.py:22`, which is what the upstream README's
+     "modify the checkpoint path in this line" hyperlink points to.
+  2. Running the smoke test against the bundled `prhmr_release_002.ckpt`
+     first isolates env failures from ckpt-swap failures (one variable
+     at a time). Swap will happen right before plan Task 7 wires
+     PromptHMR-Vid into our sidecar runner.
+- **Wrapper-script `set -e` bug.** `run_task5_demo.sh` uses
+  `{ set -euo pipefail; …; touch "$DONE"; } >> "$LOG" 2>&1; echo "$?" > "$EXIT"`
+  — when the inner block fails, `set -e` exits the whole script before
+  `$DONE` is touched AND before the outer `echo "$?" > "$EXIT"` runs.
+  Result: neither sentinel appeared after the slim-npz failure, even
+  though most of the pipeline succeeded. Will switch to
+  `set +e; cmd; ec=$?; …; echo "$ec" > "$EXIT"; if (( ec == 0 )); then touch "$DONE"; fi`
+  for Task 6 onward.
+- **Slim npz is a hidden dep.** `fetch_data.sh` does NOT download
+  `SMPLX_neutral_array_f32_slim.npz`; only `fetch_smplx.sh` does (last
+  line, `gdown 1v9Qy7…`). Because we skipped `fetch_smplx.sh` per
+  operator decision (rsynced body models from Mac instead) we missed it.
+  Documented as a footnote — for any future fresh box, EITHER run
+  `fetch_smplx.sh` OR remember to `gdown` that file separately.
+
+### VRAM peaks observed
+
+| Stage | Peak VRAM (us) | GPU util sample |
+| --- | --- | --- |
+| Demo idle (model load + ViTPose + DETR weights) | 8.6 GB | 7 % |
+| Pipeline (PRHMR-Vid + SLAM-static + post-opt) | 11.8 GB | 45 % (instantaneous post-completion) |
+
+So the boxing-short run peaks at ~12 GB on a 50-frame clip with two
+people. Comfortably inside the 40 GB envelope (other tenant uses ~3 GB).
+
+### Hand-off correction (recap)
+
+Hand-off §3 says PromptHMR install command is just
+`bash scripts/install.sh --pt_version=2.4 --world-video=true`. Confirmed
+correct on this box; produced a working env on the first try.
+
+### Commits this session (Task 5)
+
+- `8c9232e` — `docs(plan): correct phmr_vid ckpt switch instructions`
+- (pending) `log: Task 5 complete (PromptHMR-Vid env + boxing_short smoke)`
+
+### Operator report — milestone A
+
+- Env `phmr_pt2.4` exists on the box and runs the boxing smoke demo
+  end-to-end (results.pkl + world4d.mcs + world4d.glb).
+- Disk used after Task 5: 37 GB / 484 GB free.
+- Peak VRAM: 11.8 GB, comfortably inside 40 GB headroom.
+- No code touched in our repo for Task 5 (it is purely a "stand up
+  the upstream tool" milestone). Only the plan got a small correction.
+
+### Next actions
+
+Proceed to plan Task 6 (clone SAM-Body4D, create `body4d` conda env,
+run bundled Gradio demo on a single image to confirm SAM-3-Body works
+on the box).

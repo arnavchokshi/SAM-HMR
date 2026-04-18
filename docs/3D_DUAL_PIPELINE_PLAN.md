@@ -2645,11 +2645,11 @@ These are quick checks the human operator should do once before Task 1:
 | 2026-04-17 | Task 3 — extract frames at 896 + full | OK — 1 new test, 5/5 cumulative (`c8a7e33`) |
 | 2026-04-17 | Task 4 — Stage A driver (+ smoke test on `adiTest`) | OK — 188 frames + 5 tracks IDs 1-5, mean conf 0.86-0.88 (`f2ce156`) |
 | 2026-04-18 | Box-side preflight on Lambda A100 (SSH, push, miniforge, tmux) | OK — see `_agent_log.md` "2026-04-18 — box-side preflight" |
-| 2026-04-18 | clone PromptHMR (Task 5 step 1) | |
-| 2026-04-18 | install `phmr_pt2.4` env (Task 5 step 2) | |
-| 2026-04-18 | rsync cached body_models from Mac (replaces `fetch_smplx.sh`) | |
-| 2026-04-18 | run `fetch_data.sh` + BEDLAM2 ckpt (Task 5 step 3) | |
-| 2026-04-18 | run `boxing_short.mp4` demo (Task 5 step 4 — milestone gate A) | |
+| 2026-04-18 | clone PromptHMR (Task 5 step 1) | OK — `~/code/PromptHMR` HEAD `7d39d3f` |
+| 2026-04-18 | install `phmr_pt2.4` env (Task 5 step 2) | OK — torch 2.4.0+cu121, CUDA 12.1, all PromptHMR deps + DROID-SLAM + Detectron2 (~6 min wall) |
+| 2026-04-18 | rsync cached body_models from Mac (replaces `fetch_smplx.sh`) | OK — 3.37 GB (smpl/{NEUTRAL,MALE,FEMALE}.pkl + smplx/{NEUTRAL,MALE,FEMALE}.{pkl,npz} + helpers); slim npz pulled separately via `gdown 1v9Qy7…` |
+| 2026-04-18 | run `fetch_data.sh` + BEDLAM2 ckpt (Task 5 step 3) | OK — phmr/, phmr_vid/, sam2_ckpts/, sam_vit_h_4b8939.pth (2.4G), vitpose-h-coco_25.pth (2.4G), camcalib_sa_biased_l2.ckpt (288M), droidcalib.pth (16M), examples/{boxing,boxing_short,dance_1,dance_2}.mp4 — 5.1 GB total in 4.5 min |
+| 2026-04-18 | run `boxing_short.mp4` demo (Task 5 step 4 — milestone gate A) | OK — `results/boxing_short/{results.pkl 401K, world4d.mcs 44K, world4d.glb 66M, subject-{1,2}.smpl}` produced; 50 frames, 2 boxers, ~4 min wall, peak VRAM 11.8 GB |
 | 2026-04-18 | Task 6 — PromptHMR mask sidecar | |
 | 2026-04-18 | Task 7 — PromptHMR-Vid sidecar | |
 | 2026-04-18 | Task 8 — `body4d` env + Gradio demo (milestone gate B) | |
