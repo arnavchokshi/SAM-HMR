@@ -190,10 +190,18 @@ def _extract_smplx_body_joints_world(
     Returns ``{tid -> (frames_idx, joints_T_22_3 np.float32)}``. PromptHMR
     stores per-dancer SMPL-X parameters under
     ``results['people'][tid]['smplx_world']`` as
-    ``{'pose' (T, 165), 'shape' (T, 10), 'trans' (T, 3)}``. We pass the
-    axis-angle pose directly (smplx defaults to ``pose2rot=True`` and
-    converts internally); going through axis_angle_to_matrix and
-    forgetting ``pose2rot=False`` corrupts the body_pose shape.
+    ``{'pose' (T, 165), 'shape' (T, 10), 'trans' (T, 3)}``.
+
+    The 165-dim axis-angle pose follows the standard SMPL-X layout:
+    [0:3]=global_orient, [3:66]=body(21), [66:75]=jaw+leye+reye(3),
+    [75:120]=left_hand(15), [120:165]=right_hand(15). The default
+    ``smplx.SMPLX.forward`` reshapes every component (including
+    ``self.jaw_pose`` and friends, which initialise at batch=1) and
+    cats them along ``dim=1``, so we MUST pass per-frame jaw/eye
+    poses or the dim-0 mismatch fires (``Expected size B but got 1``).
+    Mirror the call site PromptHMR uses internally
+    (``pipeline/world.py:104``): zero jaw/eye/expression, real left+
+    right hand from the pose tensor.
     """
     import torch
 
@@ -206,12 +214,19 @@ def _extract_smplx_body_joints_world(
             pose = torch.as_tensor(smplx_w["pose"], dtype=torch.float32, device=device)
             shape = torch.as_tensor(smplx_w["shape"], dtype=torch.float32, device=device)
             transl = torch.as_tensor(smplx_w["trans"], dtype=torch.float32, device=device)
-            # SMPL-X axis-angle layout: 0:3 = global_orient, 3:66 = body (21 joints).
+            B = pose.shape[0]
+            zeros3 = torch.zeros(B, 3, dtype=pose.dtype, device=device)
             o = pipeline.smplx(
                 global_orient=pose[:, 0:3],
-                body_pose=pose[:, 3 : 3 + 21 * 3],
+                body_pose=pose[:, 3:66],
+                left_hand_pose=pose[:, 75:120],
+                right_hand_pose=pose[:, 120:165],
                 betas=shape,
                 transl=transl,
+                jaw_pose=zeros3,
+                leye_pose=zeros3,
+                reye_pose=zeros3,
+                expression=torch.zeros(B, 10, dtype=pose.dtype, device=device),
             )
         body = o.joints[:, :22].detach().cpu().numpy().astype(np.float32)
         frames_idx = np.asarray(person["frames"], dtype=np.int64)
