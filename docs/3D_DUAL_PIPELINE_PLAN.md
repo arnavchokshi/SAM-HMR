@@ -739,23 +739,40 @@ from .config import CompareConfig, ClipDirs, default_config  # noqa: F401
 from .io import TrackEntry, save_tracks, load_tracks  # noqa: F401
 ```
 
-Create `tests/threed/__init__.py` as an empty file so pytest discovers
-the tests as a package.
+Do **not** create `tests/threed/__init__.py`. The plan originally said
+to create it, but with pytest 8.x that file makes pytest see
+`tests/threed/` as a package literally named `threed` (because there is
+no `tests/__init__.py`), then prepend `tests/` to `sys.path`. After
+that, `from threed.config import ...` resolves to the empty
+`tests/threed/` package and raises `ModuleNotFoundError: No module
+named 'threed.config'`.
 
-Modern pytest (8.x) does **not** add the project root to `sys.path`
-automatically — even with `__init__.py` files present. Without explicit
-`pythonpath` config, `from threed.config import ...` raises
-`ModuleNotFoundError`. Add a minimal `pyproject.toml` at the repo root:
+Instead, leave `tests/threed/` as a plain directory and use pytest's
+`importlib` import mode. Add a minimal `pyproject.toml` at the repo
+root:
 
 ```toml
 # pyproject.toml
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
 ```
 
 (If a `pyproject.toml` already exists in your checkout, just add the
 `[tool.pytest.ini_options]` block to it.)
+
+You also want a `conftest.py` at the repo root so any caller (with or
+without `pytest`) can find `threed`:
+
+```python
+# conftest.py
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+```
 
 - [ ] **Step 6: Run tests to verify they pass**
 
