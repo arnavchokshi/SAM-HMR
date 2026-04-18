@@ -1168,7 +1168,8 @@ bash scripts/fetch_smplx.sh        # prompts for SMPL-X license
 bash scripts/fetch_data.sh         # PromptHMR + DROID + ZoeDepth + ViTPose
 ```
 
-Then download the BEDLAM2 video-head checkpoint:
+Then download the BEDLAM2 video-head checkpoint (better quality than the
+default `prhmr_release_002.ckpt` because it is trained on BEDLAM1+BEDLAM2):
 
 ```bash
 mkdir -p data/pretrain/phmr_vid
@@ -1176,8 +1177,20 @@ wget -O data/pretrain/phmr_vid/phmr_b1b2.ckpt \
     https://download.is.tue.mpg.de/bedlam2/ml/videos/phmr_b1b2.ckpt
 ```
 
-Edit `data/pretrain/phmr_vid/prhmr_release_002.yaml` to point the
-`pretrained_ckpt` key at `phmr_b1b2.ckpt` per repo instructions.
+To activate it, edit `pipeline/phmr_vid.py` line 22 (per the PromptHMR
+README's "modify the checkpoint path in this line" instruction) so that
+`phmr_vid_ckpt` reads `'data/pretrain/phmr_vid/phmr_b1b2.ckpt'` instead of
+`'data/pretrain/phmr_vid/prhmr_release_002.ckpt'`. The yaml file itself
+has no `pretrained_ckpt` key (it is the per-component config); only the
+.py file needs to change.
+
+Recommended sequencing:
+1. Run the bundled smoke test in step 4 with the default
+   `prhmr_release_002.ckpt` (no edit) so a successful demo proves the env
+   itself works, isolated from the ckpt swap.
+2. After the smoke test passes, swap to `phmr_b1b2.ckpt` before running
+   our pipeline in plan Task 7 (PromptHMR-Vid sidecar). Keep the swap as
+   a separate, reverted-if-needed change in `pipeline/phmr_vid.py`.
 
 - [ ] **Step 4: Verify the env works on the bundled boxing example**
 
