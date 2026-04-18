@@ -81,6 +81,27 @@ class TestStageACmd:
         )
         assert "--max-frames" not in cmd
 
+    def test_output_root_forwarded_when_set(self, orch, fake_dirs, tmp_path):
+        cmd = orch.build_stage_a_cmd(
+            python=Path("/usr/bin/python"),
+            clip="loveTest",
+            video=Path("/tmp/foo.mov"),
+            cache_dir=tmp_path / "cache",
+            output_root=Path("/home/ubuntu/work/3d_compare"),
+        )
+        assert "--output-root" in cmd
+        assert "/home/ubuntu/work/3d_compare" in cmd
+
+    def test_output_root_none_means_no_flag(self, orch, fake_dirs, tmp_path):
+        cmd = orch.build_stage_a_cmd(
+            python=Path("/usr/bin/python"),
+            clip="loveTest",
+            video=Path("/tmp/foo.mov"),
+            cache_dir=tmp_path / "cache",
+            output_root=None,
+        )
+        assert "--output-root" not in cmd
+
 
 class TestPromptHmrCmds:
     def test_build_masks(self, orch, fake_dirs):

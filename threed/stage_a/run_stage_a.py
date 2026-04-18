@@ -31,11 +31,19 @@ def main(argv=None) -> int:
     p.add_argument("--max-frames", type=int, default=None,
                    help="Cap frame extraction at N frames. None or <=0 "
                         "means decode the entire clip.")
+    p.add_argument("--output-root", type=Path, default=None,
+                   help="Override cfg.output_root so intermediates land "
+                        "under <output-root>/<clip>/ rather than "
+                        "<repo>/runs/3d_compare/<clip>/. Mirrors the "
+                        "orchestrator's --output-root flag.")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     cfg = default_config()
+    if args.output_root is not None:
+        from dataclasses import replace
+        cfg = replace(cfg, output_root=args.output_root.expanduser().resolve())
     dirs = cfg.clip_dirs(args.clip).ensure()
 
     log.info("[%s] extracting frames from %s (max_frames=%s)",

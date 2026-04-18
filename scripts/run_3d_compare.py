@@ -64,6 +64,7 @@ def build_stage_a_cmd(
     video: Path,
     cache_dir: Path,
     max_frames: Optional[int] = None,
+    output_root: Optional[Path] = None,
 ) -> List[str]:
     """Build the Stage A subprocess command (runs in host env).
 
@@ -71,6 +72,11 @@ def build_stage_a_cmd(
     decodes/extracts so downstream PHMR + body4d cost stays bounded for
     long clips. Use this to keep new-clip wall in line with adiTest's
     188-frame baseline.
+
+    ``output_root`` (default ``None``) overrides ``cfg.output_root`` so
+    the box can write intermediates under ``~/work/3d_compare/<clip>/``
+    rather than the in-repo ``runs/3d_compare/<clip>/``. Mirrors the
+    orchestrator's own ``--output-root`` flag.
     """
     cmd = [
         str(python), "-m", "threed.stage_a.run_stage_a",
@@ -80,6 +86,8 @@ def build_stage_a_cmd(
     ]
     if max_frames is not None:
         cmd.extend(["--max-frames", str(max_frames)])
+    if output_root is not None:
+        cmd.extend(["--output-root", str(output_root)])
     return cmd
 
 
@@ -326,6 +334,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 video=args.video,
                 cache_dir=args.cache_dir,
                 max_frames=args.max_frames,
+                output_root=args.output_root,
             ),
             cwd=REPO_ROOT,
         )
