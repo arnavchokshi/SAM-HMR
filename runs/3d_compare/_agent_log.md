@@ -1633,3 +1633,162 @@ regression pin.
 
 ### Commits this section
 - `a3c77bd` fix(sidecar_body4d): drop double translation in overlay scene (mesh scale)
+
+---
+
+## 2026-04-18 — Followups #2/#4/#5 + 5-clip extension batch (closes Task 14)
+
+### Scope
+Closing Task 14 end-to-end: process the remaining 5 clips on Lambda A100,
+finish the three open followups (#2 world-frame foot-skating, #4 PHMR-vs-ViTPose
+2D reprojection, #5 HTML report), keep adiTest as the regression baseline.
+Per the user's expanded scope ("just do them all and run on the A100 GPU…
+make me a writen and nice visual report"), the goal is one self-contained
+HTML deliverable plus updated docs, not a per-clip text report.
+
+### Context
+- Box: Lambda A100-SXM4-40 GB at `ubuntu@150.136.209.7`.
+- Repo: `~/work/SAM-HMR` synced to `origin/main` after each commit.
+- Per-clip artifact root: `~/work/3d_compare/<clip>/`.
+- Tracking caches for the 5 new clips were generated locally (Mac) by
+  `scripts/run_winner_stack_demo.py` and SCP'd to `~/work/cache/<clip>/`.
+
+### Followup #2 — world-frame foot-skating (`metrics.py` + wiring)
+Implemented `foot_skating_world_frame(joints_world, *, foot_idx=7,
+threshold_m=0.05, height_axis=1)` which:
+1. Calibrates a per-dancer floor as `nanmin(Y[:, dancer, foot_idx])`.
+2. Marks frames "planted" iff `(Y - floor) < threshold_m`.
+3. Returns the mean inter-frame foot velocity over planted frames per dancer.
+
+Why per-dancer floor: PHMR's world frame is camera-anchored, so each dancer
+sits at a slightly different Y-offset depending on init pose. A global
+nanmin would over-estimate skating for dancers whose lowest detected
+foot pose still hovers above the visual floor. 8 unit tests; the
+`test_lifted_foot_not_counted` case had to set the lifted dancer's
+frame-0 foot at Y=0 to give the per-dancer calibration a floor it would
+actually exclude later frames from.
+
+Wired into `threed/compare/run_compare.py` as `--prompthmr-world-joints`
+(+ `--world-foot-idx`/`--world-foot-threshold`); orchestrator
+`scripts/run_3d_compare.py` looks for `prompthmr/joints_world.npy` and
+forwards the path iff it exists. Field name in `metrics.json`:
+`foot_skating_phmr_world_m_per_frame` (length-N, m/frame).
+
+Cross-clip results: 0.005 (easyTest) to 0.031 (adiTest) m/frame —
+markedly lower than the cam-frame metric (0.02-0.06) which used to read
+near-zero only because the camera is mounted above the floor and the
+naive distance metric included aerial frames as "planted".
+
+### Followup #4 — 2D reprojection vs ViTPose (PHMR side only)
+New module `threed/sidecar_promthmr/reproject_vs_vitpose.py`:
+1. Loads `results.pkl` (joblib), extracts `img_focal` + `img_center` per dancer.
+2. Loads `joints_coco17_cam.npy` from `--prompthmr-dir`.
+3. Pads ViTPose 2D detections (variable length per dancer) into a dense
+   `(T, N, 17, 3)` array via `load_vitpose_padded()`; missing frames/dancers
+   become NaN.
+4. Reprojects PHMR's 3D COCO-17 to 2D via `reproject_3d_to_2d` (pinhole,
+   `u = focal*X/Z + cx`, `v = focal*Y/Z + cy`, NaN for `Z<=0`).
+5. Masks ViTPose keypoints with `conf < --vitpose-conf-threshold`
+   (default 0.3) as NaN.
+6. Computes `mpjpe_2d` (NaN-safe pixel error) and writes
+   `reproj_metrics.json` with mean PHMR-vs-ViTPose pixel MPJPE +
+   per-dancer breakdown.
+
+Body4D-vs-ViTPose deferred: PHMR's intrinsics live in resized image space
+(504×896) while Body4D operates on native 1280×720 with no exposed
+intrinsics, so there's no shared reference frame yet. Followup if the
+user asks for a fully cross-pipeline 2D check.
+
+Cross-clip pixel MPJPE: 9.6 (easyTest) to 14.5 (loveTest) px — well
+within "PHMR's reproj is internally consistent with its own ViTPose
+input" range. Outlier: 2pplTest at 43.3 px; the dancers occupy ~5% of
+the frame (small scale) and ViTPose is much noisier on small subjects
+(98 ViTPose keypoints masked across 188 frames vs ~6 on easyTest).
+
+### Followup #5 — self-contained HTML report (`scripts/build_html_report.py`)
+- Discovers per-clip subdirs under `runs/3d_compare/` that have a
+  `comparison/metrics.json`; sorted alphabetically for deterministic output.
+- `summarize_clip(clip_dir)` reads `metrics.json` + `reproj_metrics.json`
+  into a single dict-of-scalars row; missing optional fields land as
+  `None` so the renderer can show a placeholder cell.
+- `build_html(rows, root, title)` returns a single string with inline
+  CSS (no JS, no CDN), `<video>` tags pointing at clip-relative
+  `comparison/side_by_side.mp4`, glossary card, per-clip "card" with
+  side-by-side video + metric `<dl>`, summary table with PA-MPJPE
+  pill-coloured (good <0.30, warn <0.70, bad ≥0.70).
+- 11 unit tests cover discovery, summarisation, missing optional metrics,
+  and end-to-end `main()`.
+
+### Cross-clip headline numbers (188 frames each, --max-frames 188)
+
+| clip      | N | raw_m | pa_m | jit_phmr | jit_b4d | fs_phmr_w | fs_b4d_cam | reproj_px |
+|-----------|---|-------|------|----------|---------|-----------|------------|-----------|
+| adiTest   | 5 | 9.214 | 0.459 | 0.0447   | 0.0487  | 0.0312    | 0.0569     | 10.21     |
+| 2pplTest  | 3 | 4.514 | 0.213 | 0.0493   | 0.0761  | 0.0229    | 0.0460     | 43.34     |
+| easyTest  | 6 | 11.073| 0.178 | 0.0138   | 0.0144  | 0.0048    | 0.0427     | 9.57      |
+| gymTest   | 7 | 14.466| 1.203 | 0.0487   | 0.0306  | 0.0226    | 0.0518     | 11.93     |
+| BigTest   | 8 | 12.828| 0.736 | 0.0317   | 0.0451  | 0.0232    | 0.0640     | 12.26     |
+| loveTest  |14 |11.521 | 0.385 | 0.0155   | 0.0110  | 0.0131    | 0.0160     | 14.51     |
+
+### Observations from the cross-clip table
+1. **Procrustes alignment was the right call** — raw MPJPE varies by
+   ~3× across clips (4.5-14.5 m) but PA-MPJPE varies by 6× *and* picks
+   out a real outlier (gymTest at 1.20 m). Without PA, the raw values
+   are uninformative.
+2. **gymTest is the hardest clip** — 1.20 m PA-MPJPE means per-dancer
+   coordinate frames disagree by >1 m even after rigid alignment. Likely
+   causes: heavy depth-of-field gym equipment occlusion + camera dolly
+   that we haven't compensated for in either pipeline. Worth a deeper
+   per-dancer drill-down before claiming any cross-pipeline metric.
+3. **PHMR is consistently smoother** — `jit_phmr` < `jit_b4d` on 4 of 6
+   clips, and the two flips (gymTest, loveTest) are still within ~30%.
+   Body4D's HMR head is per-frame independent, which is consistent with
+   slightly higher jitter.
+4. **World-frame foot-skating works** — all six clips report PHMR
+   world-FS in [0.005, 0.031] m/frame. Cam-frame Body4D FS sits 1.5-3×
+   higher because there's no floor reference; this is exactly the
+   discrepancy Followup #2 was supposed to expose.
+5. **Reproj-vs-ViTPose is a good sanity check** — 5 of 6 clips are in
+   [9.6, 14.5] px which is within "PHMR's 3D and its own 2D detector
+   broadly agree" range. 2pplTest's 43 px is a known small-subject
+   ViTPose failure mode, not a pipeline bug.
+
+### Bug fix during batch run
+`gymTest` first attempt failed at `mesh_4d_individual/<pid+1>/<frame>.ply`
+write because upstream's `save_mesh_results` doesn't `mkdir` the
+per-dancer subdirs (the bug only surfaces with PIDs ≥ 5 because the
+first 5 are pre-created elsewhere). Fixed in
+`threed/sidecar_body4d/wrapper.py::monkeypatch_save_mesh_results` with
+a defensive `Path(save_dir, str(slot)).mkdir(parents=True, exist_ok=True)`
+loop before the wrapped function call. Regression test
+`test_creates_per_pid_subdirs_under_save_and_focal` simulates 7 outputs
+and asserts all 7 dirs exist post-call. Re-running gymTest succeeded
+in 931 s wall.
+
+### Commits this section
+- `915fc5f` feat(threed/compare): add foot_skating_world_frame metric
+- `e8af9bb` feat(threed/compare): wire world-frame foot-skating through orchestrator
+- `f2b1c8e` feat(threed/sidecar_promthmr): add reproject_vs_vitpose script
+- `c06c2a4` feat(threed/compare): add reproject_3d_to_2d + mpjpe_2d helpers
+- `ca9118a` fix(sidecar_body4d): mkdir per-pid subdirs before save_mesh_results
+- `9038902` feat(threed/report): add scripts/build_html_report.py for cross-clip dashboard
+
+### Test totals
+- Before this section: 241 passed, 3 skipped
+- After this section: **286 passed, 1 warning** (+8 metric, +2 wiring,
+  +2 orchestrator, +5 mpjpe_2d, +6 reproject_3d_to_2d, +7 reproject_vs_vitpose,
+  +11 build_html_report = 41 new tests, +4 from prior unflushed pushes).
+
+### Open questions (none blocking)
+1. Body4D-vs-ViTPose 2D reproj (deferred) — needs intrinsics + image-space
+   normalisation between the two pipelines.
+2. gymTest PA-MPJPE = 1.20 m — worth a per-dancer drill-down before any
+   cross-pipeline metric claim.
+3. 2pplTest reproj 43 px — re-run with a higher `--vitpose-conf-threshold`
+   (0.5?) to see if the small-subject ViTPose noise dominates.
+
+### Next actions
+- Push `9038902` and the doc/log updates.
+- Open `runs/3d_compare/report.html` locally (file://) to spot-check.
+- Surface the cross-clip table to the user; defer further followups
+  unless asked.

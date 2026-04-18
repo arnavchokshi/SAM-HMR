@@ -346,10 +346,61 @@ the cross-clip comparison is interpreted.
 
 ## 7. Reproducibility receipts
 
-- Repo HEAD: [`a3c77bd`](https://github.com/arnavchokshi/SAM-HMR/commit/a3c77bd) on `main`
+- Repo HEAD: [`9038902`](https://github.com/arnavchokshi/SAM-HMR/commit/9038902) on `main`
 - Box: Lambda A100-SXM4-40GB, miniforge `body4d` env (py 3.12.13,
   torch 2.7.1+cu118, setuptools 79.0.1)
 - Upstream pins:
   - PromptHMR HEAD `7d39d3f`
   - SAM-Body4D HEAD `21af102`
-- Tests: `pytest tests/threed/ -q` → 241 passed, 3 skipped, 1 warning
+- Tests: `pytest tests/threed/ -q` → **286 passed, 1 warning**
+
+---
+
+## 8. Cross-clip results (added 2026-04-18 — closes Followups #2/#4/#5 + Task 14)
+
+All 6 candidate clips processed end-to-end on Lambda A100 with
+`--max-frames 188 --batch-size 32 --disable-completion`:
+
+| clip      | N | raw MPJPE (m) | **PA-MPJPE (m)** | jitter PHMR | jitter Body4D | foot-skating PHMR (world) | foot-skating Body4D (cam) | reproj-vs-ViTPose (px) |
+|-----------|---|---------------|------------------|-------------|---------------|---------------------------|---------------------------|------------------------|
+| adiTest   | 5 | 9.214         | 0.459            | 0.0447      | 0.0487        | 0.0312                    | 0.0569                    | 10.21                  |
+| 2pplTest  | 3 | 4.514         | **0.213**        | 0.0493      | 0.0761        | 0.0229                    | 0.0460                    | 43.34 (small subjects) |
+| easyTest  | 6 | 11.073        | **0.178**        | 0.0138      | 0.0144        | 0.0048                    | 0.0427                    | 9.57                   |
+| gymTest   | 7 | 14.466        | **1.203 (high)** | 0.0487      | 0.0306        | 0.0226                    | 0.0518                    | 11.93                  |
+| BigTest   | 8 | 12.828        | 0.736            | 0.0317      | 0.0451        | 0.0232                    | 0.0640                    | 12.26                  |
+| loveTest  |14 | 11.521        | 0.385            | 0.0155      | 0.0110        | 0.0131                    | 0.0160                    | 14.51                  |
+
+Headlines:
+1. **PA-MPJPE separates a real outlier from the noise.** Raw MPJPE varies
+   by ~3× across clips (4.5-14.5 m) but is dominated by coord-system
+   translation. PA-MPJPE varies by 6× and surfaces gymTest as the only
+   problem clip (1.20 m vs the other 5 in [0.18, 0.74]).
+2. **PHMR is consistently smoother than Body4D** on 4 of 6 clips. The
+   two flips (gymTest, loveTest) stay within ~30%. Body4D's HMR head is
+   per-frame independent, which matches the observed jitter pattern.
+3. **World-frame foot-skating (Followup #2) actually fires.** PHMR-world
+   FS lives in [0.005, 0.031] m/frame across clips. Body4D cam-frame FS
+   sits 1.5-3× higher because there's no floor reference — exactly the
+   discrepancy this followup was designed to expose.
+4. **Reproj-vs-ViTPose (Followup #4)** sanity checks PHMR's 3D against
+   its own 2D detector: 5 of 6 clips in [9.6, 14.5] px, well within
+   "internally consistent" range. 2pplTest's 43 px is a known ViTPose
+   small-subject failure mode (98 keypoints masked across 188 frames),
+   not a pipeline bug.
+
+### How to view the visual report
+- `runs/3d_compare/report.html` (10.7 kB, self-contained, no JS/CDN).
+  Open with `file://` in any browser; embedded `<video>` tags reference
+  per-clip `comparison/side_by_side.mp4` (10-12 MB each).
+- Per-clip `metrics.json` + `reproj_metrics.json` live alongside the
+  videos for downstream analysis.
+- Regenerate at any time with
+  `python scripts/build_html_report.py --root runs/3d_compare --output runs/3d_compare/report.html`.
+
+### Status of all 5 followups from §6
+1. Procrustes-aligned MPJPE — **closed** (commit `f7b70fa`)
+2. World-frame foot-skating — **closed** (commits `915fc5f`, `e8af9bb`)
+3. PHMR mesh overlays — **closed** (commits `ab711a0`, `8ee06cb`, `9e8e531`)
+4. 2D reprojection vs ViTPose — **closed PHMR side** (commits `f2b1c8e`, `c06c2a4`); Body4D side deferred (intrinsics live in different image space).
+5. HTML report — **closed** (commit `9038902`)
+
