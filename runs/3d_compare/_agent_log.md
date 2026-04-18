@@ -1393,3 +1393,152 @@ offenders with completion ON later.
   and we don't pass `--static-camera` in the first pass. If SLAM
   fails the orchestrator will return non-zero; we'd retry with
   `--static-camera`.
+
+---
+
+## 2026-04-18 — Followup #6 (SAM-Body4D mesh overlay on real video)
+
+### Problem
+After Followup #3 the **left** panel of `side_by_side.mp4` showed
+PHMR's SMPL-X mesh composited onto the original RGB frame, but the
+**right** panel still used SAM-Body4D's upstream `rendered_frames/`
+which is the MHR mesh on a clean grey background. The user asked
+for both panels to be "overlayed on the real mp4". Without that the
+two visualisations aren't directly comparable.
+
+### Solution shape
+Mirror the PHMR sidecar pattern (`threed/sidecar_promthmr/render_overlay.py`)
+on the body4d side and slot it into the orchestrator with a matching
+skip flag. Re-use the shared helpers `dancer_color_palette` and
+`composite_overlay` from the PHMR sidecar so both panels share their
+colour wheel and alpha-blend semantics.
+
+### What got built
+1. `threed/sidecar_body4d/render_overlay.py`
+   * `discover_body4d_dancer_ids(mesh_root)` — sorted ints from
+     numeric subdirs of `mesh_4d_individual/` (skips
+     `mesh_4d_individual_unified/`, `unified.ply`, etc.).
+   * `load_focal_meta(json_path)` — parses each per-(dancer,frame)
+     `focal_4d_individual/<id>/<frame>.json` into
+     `(focal: float, cam_t: (3,) float32)`.
+   * `body4d_dancer_world_pos(cam_t)` — translation that places a
+     dancer in a shared OpenGL camera-at-origin scene given
+     SAM-Body4D's `pred_cam_t`. SAM-Body4D's `Renderer.render_*`
+     places the camera at world position `[-cam_t.x, cam_t.y, cam_t.z]`
+     and rotates the world 180° about X so the mesh is in front;
+     we replicate that by translating each mesh by
+     `[2*cam_t.x, -cam_t.y, -cam_t.z]` (the negation accounts for
+     both the sign flip on cam_t.x and the X-rotation already baked
+     into the PLY by upstream's `vertices_to_trimesh`).
+   * `flip_yz_verts(verts)` — generic 180° X-rotation utility kept
+     for completeness (not used by `_build_pyrender_scene`; PLY
+     vertices are already pre-flipped).
+   * `_build_pyrender_scene(...)` — single multi-dancer
+     `pyrender.Scene` with one `IntrinsicsCamera` (focal from JSON,
+     `cx/cy = W/2 / H/2`, `znear=0.1, zfar=200`) and one identity
+     `DirectionalLight`.
+   * `main()` — for each frame in `frames_full/` builds a scene
+     containing every dancer that has a PLY at that frame, renders
+     RGBA at native frame resolution via headless `pyrender.OffscreenRenderer`,
+     then alpha-composites onto the input JPG. Writes
+     `<body4d_dir>/rendered_frames_overlay/<frame:08d>.jpg`.
+2. `tests/threed/test_body4d_render_overlay.py` — 19 tests:
+   * `discover_body4d_dancer_ids` (sorted ints, ignores non-numeric
+     dirs, raises `FileNotFoundError` on missing root).
+   * `load_focal_meta` (float/int focal, missing file).
+   * `body4d_dancer_world_pos` (shape, dtype, sign convention,
+     zero input, **regression pin** that the result equals the
+     negated upstream camera world position so we never re-introduce
+     the double-flip bug below).
+   * `flip_yz_verts` (shape, axis changes, idempotence, error
+     handling on bad shapes).
+3. `scripts/run_3d_compare.py`
+   * New `build_body4d_render_overlay_cmd(...)` command builder.
+   * `plan_pipeline()` gains `skip_body4d_render` (default `False`),
+     placing `body4d_render` after `body4d` and **before** `compare`.
+     `--skip-body4d` implies `--skip-body4d-render` (you can't render
+     overlays you didn't generate).
+   * New `--skip-body4d-render` CLI flag.
+   * `main()` runs the new stage between `body4d` and `compare`.
+   * The final `render` step **auto-detects** `<sam_body4d>/rendered_frames_overlay/`
+     on disk and prefers it over upstream's `rendered_frames/`. So
+     the side-by-side stitcher needs no new flags — just point at
+     the same directory and the overlay frames win when present.
+4. `tests/threed/test_orchestrator.py` — 3 new tests:
+   * `test_render_overlay()` — `build_body4d_render_overlay_cmd`
+     emits the right argv.
+   * `test_skip_body4d_render_only` — `--skip-body4d-render` skips
+     just the render stage, body4d still runs.
+   * `test_skip_body4d_implies_skip_body4d_render` — defensive
+     coupling of the two flags.
+
+### The bug — double 180-X flip → invisible meshes
+First box run produced a `body4d_overlay_frame50.jpg` that looked
+identical to the input frame: zero alpha, flat depth buffer. Wrote
+`/tmp/debug_body4d_render.py` on the box to log raw `pyrender`
+output. Tracing SAM-Body4D's `vertices_to_trimesh` revealed the
+PLY-on-disk vertices are already
+`(pred_verts + cam_t) * [1, -1, -1]` — i.e. upstream applies the
+180° X-rotation **before** writing the PLY. My
+`_build_pyrender_scene` was applying `flip_yz_verts` again, double-
+flipping the mesh and pushing half of every vertex behind
+`pyrender`'s `znear=0.1` clipping plane.
+
+**Fix.** Removed the redundant `flip_yz_verts` call in
+`_build_pyrender_scene`; vertices are now added straight from the
+PLY (after only the per-dancer translation from
+`body4d_dancer_world_pos`). Updated the docstrings on
+`_build_pyrender_scene`, `body4d_dancer_world_pos`, and
+`flip_yz_verts` (and their tests) to lock in the corrected mental
+model. Added the `body4d_dancer_world_pos` regression pin in the
+test file so a future "let me just flip it again" change fails
+loudly.
+
+### Box receipt — adiTest re-render
+```
+body4d_render (PLY + pyrender):    33 s wall, 188 frames, 5 dancers, 1280x720
+re-stitch (compare + render):       4 s wall (skip stage_a, masks, phmr*, body4d)
+side_by_side.mp4:                   10.4 MB (was 8.3 MB after Followup #3),
+                                    2570x720 @ 30 fps
+sam_body4d/rendered_frames_overlay/ 188 JPGs
+```
+
+Verified by pulling `side_by_side.mp4` + a sample
+`body4d_overlay_frame50.jpg` to the user's desktop and visually
+confirming both panels show colored mesh overlays on the original
+RGB frame.
+
+### Architecture decision: prefer overlay frames implicitly
+The orchestrator's `render` step now reads the
+`sam_body4d/rendered_frames_overlay/` directory if it exists on disk
+and falls back to upstream's `rendered_frames/` otherwise. No new
+CLI flag was needed for the user. Trade-off: a user who *wants*
+upstream's clean-background frames in the right panel can no longer
+get them via the orchestrator without manual deletion of the
+overlay dir — but that case is a debugging convenience, not a
+production output, so the simpler default wins.
+
+### Test totals
+- Before: 220 passed, 3 skipped
+- After:  239 passed, 3 skipped (+19 in `test_body4d_render_overlay.py`,
+  +3 in `test_orchestrator.py`, -3 from cleanup of inline scratch
+  asserts during the bug investigation)
+
+### Commits this section
+- `77a700e` feat(sidecar_body4d): add per-frame mesh-overlay renderer
+- `37a01f8` feat(orchestrator): wire body4d_render stage + prefer overlay frames
+- `e33572d` fix(sidecar_body4d): drop double 180-X-rotation in overlay scene
+
+### Next actions
+* Followup #2 (world-frame foot-skating) — needs the inverse-
+  projection of body4d to PHMR's world frame (uses cam_t + R from
+  the per-frame focal JSON). Naturally pairs with the Procrustes
+  alignment that already lives in `metrics.py`.
+* Followup #4 (2D reprojection error) — project both 3D joint sets
+  back through their per-frame intrinsics and compare against the
+  cached `vitpose` 17-keypoint output. PHMR side already exposes
+  the relevant K matrix in `results.pkl`.
+* Task 14 batch (the other 5 clips on the box) is still **blocked**
+  on user confirmation of GPU spend (~$1-3, ~2 h A100). The box is
+  staged and ready (`~/work/run_all_clips.sh` and per-clip caches
+  in `~/work/cache/` are in place).
