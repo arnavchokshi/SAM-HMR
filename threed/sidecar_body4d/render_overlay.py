@@ -14,18 +14,36 @@ upstream's ``rendered_frames/`` whenever it's on disk.
 Why a separate sidecar (and not patching SAM-Body4D)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-SAM-Body4D's :class:`Renderer` already knows the right convention
-(it negates ``cam_t.x`` for the camera position and applies a 180°
-X-axis rotation to the mesh so it lands in the OpenGL frame). But
-its :func:`save_mesh_results` callsite uses a clean white image as
-the background, so the upstream ``rendered_frames/`` JPGs don't
-overlay the meshes on the dance footage. We re-use the convention
-(see :func:`body4d_dancer_world_pos` + :func:`flip_yz_verts`) but
-render all dancers in **one** pyrender scene so cross-dancer
-occlusion is depth-correct, then alpha-blend onto the input frame.
-This also matches the structure of
+SAM-Body4D's :class:`Renderer` already does the right thing for
+multi-dancer rendering: :func:`Renderer.render_rgba_multiple` adds
+each dancer's mesh to a single :class:`pyrender.Scene` with the
+camera at the world origin and **no** per-dancer translation —
+upstream's :func:`Renderer.vertices_to_trimesh` already bakes the
+per-dancer ``cam_t`` and the OpenCV→OpenGL 180° X-rotation into
+the PLY-on-disk vertices. But upstream's :func:`save_mesh_results`
+callsite renders onto a clean white image, so the
+``rendered_frames/`` JPGs don't overlay the meshes on the dance
+footage. We replicate ``render_rgba_multiple``'s scene setup
+(single scene, camera at origin, per-frame intrinsics from the
+JSON sidecar), then alpha-blend the resulting RGBA onto the input
+frame. The structure mirrors
 :mod:`threed.sidecar_promthmr.render_overlay`, so the two sidecars
 share the colour palette + composite helpers.
+
+Coordinate convention (gotcha — keep this short and pinned)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PLY vertices on disk are ``(pred_vertices + cam_t) * [1, -1, -1]``.
+This places the mesh's centroid at ``(cam_t.x, -cam_t.y, -cam_t.z)``
+in OpenGL world coords (Y-up, Z-back), which is in front of an
+origin camera looking down ``-Z``. **No further translation is
+needed** in the multi-dancer scene; an earlier draft of this module
+applied a ``-camera_world`` shift on top, which double-translated
+each dancer to ``2*cam_t`` depth and made every mesh render at
+half its true on-screen size. The pure helper
+:func:`upstream_ply_centroid` documents and pins this convention so
+the regression can't sneak back. See box receipt in
+``runs/3d_compare/_agent_log.md`` for the visual evidence.
 
 Inputs (all paths absolute or relative to CWD)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -53,7 +71,7 @@ Pure helpers (unit-tested in
 
 - :func:`discover_body4d_dancer_ids`
 - :func:`load_focal_meta`
-- :func:`body4d_dancer_world_pos`
+- :func:`upstream_ply_centroid`
 - :func:`flip_yz_verts`
 
 The pyrender rasterisation loop in :func:`main` is exercised by the
@@ -115,25 +133,23 @@ def load_focal_meta(json_path: Path) -> Tuple[float, np.ndarray]:
     return float(meta["focal_length"]), np.asarray(meta["camera"], dtype=np.float32)
 
 
-def body4d_dancer_world_pos(cam_t: np.ndarray) -> np.ndarray:
-    """Translation to apply to a PLY's vertices for the shared-camera scene.
+def upstream_ply_centroid(cam_t: np.ndarray) -> np.ndarray:
+    """Approximate centroid of a SAM-Body4D PLY-on-disk in world coords.
 
-    SAM-Body4D's :class:`Renderer` puts the **camera** at
-    ``(-cam_t.x, cam_t.y, cam_t.z)`` and consumes the PLY vertices
-    as-is (they were already saved in that "post-flip world" frame by
-    upstream's :func:`vertices_to_trimesh` —
-    ``(pred_verts + cam_t) * [1, -1, -1]``).
+    Models SAM-Body4D's :func:`Renderer.vertices_to_trimesh` for a
+    centred mesh (``pred_vertices`` ≈ origin in model space): the
+    saved PLY vertices are ``(pred_vertices + cam_t) * [1, -1, -1]``,
+    so the centroid sits at ``(cam_t.x, -cam_t.y, -cam_t.z)`` in
+    OpenGL world coords. For typical positive ``cam_t.z`` this is in
+    front of an origin camera looking down ``-Z``, which is why
+    :func:`Renderer.render_rgba_multiple` (and our
+    :func:`_build_pyrender_scene`) needs **no per-dancer translation**.
 
-    For our multi-dancer scene we want the camera at the world origin
-    so all dancers can share one pyrender camera (depth-correct
-    cross-dancer occlusion). To put a dancer in that shared frame we
-    translate their PLY vertices by ``-camera_world``, i.e.
-    ``+(cam_t.x, -cam_t.y, -cam_t.z)``. The X sign comes out positive
-    because upstream first negates ``cam_t.x`` to get the camera
-    position; our ``-camera_world`` flips it back to ``+cam_t.x``.
-
-    Returns the per-dancer translation vector; callers add it to the
-    PLY vertices before adding the mesh to the scene.
+    Used purely as a regression pin: a future change that re-introduces
+    a ``-camera_world`` offset on top of the PLY would fail
+    :class:`tests.threed.test_body4d_render_overlay.TestUpstreamPlyCentroid`
+    long before reaching the box. See module docstring for the bug it
+    guards against.
     """
     cam_t = np.asarray(cam_t, dtype=np.float32)
     if cam_t.shape != (3,):
@@ -177,25 +193,31 @@ def _build_pyrender_scene(
 ):
     """Build a pyrender Scene with all dancers + a perspective camera.
 
+    Mirrors :func:`Renderer.render_rgba_multiple` in
+    ``models/sam_3d_body/sam_3d_body/visualization/renderer.py``:
+    one scene, camera at the world origin, per-dancer mesh added
+    **as-is** from the PLY. The PLY already encodes the per-dancer
+    ``cam_t`` translation and the OpenCV→OpenGL X-rotation via
+    upstream's :func:`vertices_to_trimesh`, so adding any extra
+    per-dancer offset here would double-translate the mesh and
+    shrink it on screen (see the "Coordinate convention" gotcha in
+    the module docstring).
+
     Each entry in ``meshes_with_cam`` is a tuple
     ``(verts, faces, cam_t, color)``:
 
-    - ``verts``: ``(V, 3)`` mesh vertices straight off the PLY. These
-      are SAM-Body4D's ``vertices_to_trimesh`` output, i.e.
-      ``(pred_vertices + cam_t) * [1, -1, -1]`` — already in the
-      "post-flip" world that upstream's :class:`Renderer` consumes,
-      so we **don't** flip again here.
+    - ``verts``: ``(V, 3)`` mesh vertices straight off the PLY,
+      consumed verbatim.
     - ``faces``: ``(F, 3)`` mesh faces.
-    - ``cam_t``: ``(3,)`` per-dancer ``pred_cam_t`` (the un-negated
-      original; we apply the X-negation inside
-      :func:`body4d_dancer_world_pos`).
+    - ``cam_t``: ``(3,)`` per-dancer ``pred_cam_t``. Currently unused
+      by the scene math — kept in the tuple because the loader has it
+      for free and a future mode (e.g. per-dancer focal compensation)
+      may want it.
     - ``color``: RGB triple in ``[0, 1]``.
 
-    Vertices are translated by :func:`body4d_dancer_world_pos` so all
-    dancers land in a shared frame with the camera at the world
-    origin. The camera intrinsics use the shared per-frame focal +
+    The camera intrinsics use the shared per-frame focal +
     image-centred principal point (``[W/2, H/2]``) — same convention
-    upstream's :class:`Renderer` uses when ``camera_center`` is left
+    :func:`render_rgba_multiple` uses when ``camera_center`` is left
     as the default.
     """
     import pyrender
@@ -205,8 +227,8 @@ def _build_pyrender_scene(
         bg_color=[0.0, 0.0, 0.0, 0.0],
         ambient_light=[0.4, 0.4, 0.4],
     )
-    for verts, faces, cam_t, color in meshes_with_cam:
-        v = verts.astype(np.float32, copy=True) + body4d_dancer_world_pos(cam_t)[None, :]
+    for verts, faces, _cam_t, color in meshes_with_cam:
+        v = verts.astype(np.float32, copy=True)
         mesh_tri = trimesh.Trimesh(vertices=v, faces=faces, process=False)
         material = pyrender.MetallicRoughnessMaterial(
             baseColorFactor=[float(color[0]), float(color[1]), float(color[2]), 1.0],

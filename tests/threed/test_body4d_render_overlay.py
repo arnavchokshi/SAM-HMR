@@ -17,10 +17,10 @@ import numpy as np
 import pytest
 
 from threed.sidecar_body4d.render_overlay import (
-    body4d_dancer_world_pos,
     discover_body4d_dancer_ids,
     flip_yz_verts,
     load_focal_meta,
+    upstream_ply_centroid,
 )
 
 
@@ -100,67 +100,89 @@ class TestLoadFocalMeta:
 
 
 # ---------------------------------------------------------------------------
-# body4d_dancer_world_pos
+# upstream_ply_centroid
 # ---------------------------------------------------------------------------
 
 
-class TestBody4dDancerWorldPos:
-    """Mirrors SAM-Body4D's ``camera_translation[0] *= -1`` convention.
+class TestUpstreamPlyCentroid:
+    """Pins SAM-Body4D's PLY-on-disk convention against accidental drift.
 
-    Upstream's :class:`Renderer` puts the camera at world position
-    ``(-cam_t.x, cam_t.y, cam_t.z)`` and consumes the PLY vertices
-    as-is (they're already in that "post-flip world" — saved by
-    upstream's :func:`vertices_to_trimesh` as
-    ``(pred_verts + cam_t) * [1, -1, -1]``). For a single pyrender
-    scene with **all** dancers we move the camera to the world origin
-    and translate each dancer by ``-camera_world``, i.e.
-    ``+(cam_t.x, -cam_t.y, -cam_t.z)``. This helper returns that
-    translation so callers can add it directly to the PLY vertices.
+    SAM-Body4D's :func:`save_mesh_results` (in
+    ``models/sam_3d_body/notebook/utils.py``) calls
+    ``Renderer.vertices_to_trimesh(pred_vertices, pred_cam_t)``; that
+    function adds ``cam_t`` to the model-space vertices **then**
+    applies a 180° X-rotation, i.e. emits
+    ``(pred_vertices + cam_t) * [1, -1, -1]``. The multi-dancer
+    rendering path (:func:`Renderer.render_rgba_multiple`) keeps the
+    camera at the world origin and feeds those PLY vertices straight
+    into the scene with **no extra translation**.
+
+    Our :mod:`render_overlay` mirrors that convention, so the function
+    under test deliberately models the upstream centroid math without
+    any per-dancer fudge factor — if a future change tries to add a
+    "world position" offset the way an earlier draft did, this suite
+    will fail loudly and the side-by-side video will keep its proper
+    scale.
     """
+
+    def test_zero_pred_verts_centroid_equals_flipped_cam_t(self):
+        """For ``pred_verts == 0`` the PLY centroid is ``(cam_t.x, -cam_t.y, -cam_t.z)``.
+
+        (The X sign is **kept** — only Y/Z are flipped — because the
+        multi-dancer path never negates ``cam_t.x``. The single-dancer
+        path does, but we don't use that one here.)
+        """
+        cam_t = np.array([0.395, 1.578, 3.428], dtype=np.float32)
+        c = upstream_ply_centroid(cam_t)
+        np.testing.assert_allclose(c, [0.395, -1.578, -3.428])
+
+    def test_negative_x_stays_negative(self):
+        cam_t = np.array([-1.639, 1.717, 3.168], dtype=np.float32)
+        c = upstream_ply_centroid(cam_t)
+        np.testing.assert_allclose(c, [-1.639, -1.717, -3.168])
+
+    def test_zero_cam_t_zero_centroid(self):
+        c = upstream_ply_centroid(np.zeros(3, dtype=np.float32))
+        np.testing.assert_array_equal(c, np.zeros(3, dtype=np.float32))
+
+    def test_centroid_z_is_in_front_of_origin_camera(self):
+        """For typical positive-depth ``cam_t.z``, the centroid Z is negative
+        — i.e. **in front of** an OpenGL camera at the world origin
+        (which looks down ``-Z``). This is the property that keeps
+        the mesh visible without any extra translation.
+        """
+        cam_t = np.array([0.0, 0.2, 5.0], dtype=np.float32)
+        c = upstream_ply_centroid(cam_t)
+        assert c[2] < 0
+        assert c[2] == pytest.approx(-5.0)
 
     def test_shape_and_dtype(self):
         cam_t = np.array([0.395, 1.578, 3.428], dtype=np.float32)
-        out = body4d_dancer_world_pos(cam_t)
-        assert out.shape == (3,)
-        assert out.dtype == np.float32
+        c = upstream_ply_centroid(cam_t)
+        assert c.shape == (3,)
+        assert c.dtype == np.float32
 
-    def test_negates_yz_keeps_x(self):
-        """X stays positive (same sign as cam_t.x); Y and Z get flipped."""
-        cam_t = np.array([0.5, 1.5, 3.5], dtype=np.float32)
-        out = body4d_dancer_world_pos(cam_t)
-        np.testing.assert_allclose(out, [0.5, -1.5, -3.5])
-
-    def test_negative_x_stays_negative(self):
-        """Per SAM-Body4D's convention, the X sign is flipped twice (once when
-        upstream negates ``camera.x``, once when we shift the dancer to the
-        camera-at-origin frame), netting to: dancer translation X equals
-        ``cam_t.x``.
+    def test_pred_verts_centroid_at_origin_falls_back_to_cam_t_only(self):
+        """The helper takes only ``cam_t`` because the *centroid* of
+        ``pred_vertices`` is approximately the model-space origin for
+        a centred body mesh; this is exactly what makes multi-dancer
+        compositing depth-correct without any per-dancer offset.
         """
-        cam_t = np.array([-1.639, 1.717, 3.168], dtype=np.float32)
-        out = body4d_dancer_world_pos(cam_t)
-        np.testing.assert_allclose(out, [-1.639, -1.717, -3.168])
+        for cam_t in [
+            np.array([0.0, 0.0, 5.0], dtype=np.float32),
+            np.array([0.5, 1.0, 7.5], dtype=np.float32),
+            np.array([-0.7, 1.2, 4.5], dtype=np.float32),
+        ]:
+            c = upstream_ply_centroid(cam_t)
+            assert c[0] == pytest.approx(cam_t[0])
+            assert c[1] == pytest.approx(-cam_t[1])
+            assert c[2] == pytest.approx(-cam_t[2])
 
-    def test_zero_camera_zero_translation(self):
-        """A camera at the model origin yields a zero translation —
-        useful sanity check, even if SAM-Body4D never produces that."""
-        out = body4d_dancer_world_pos(np.zeros(3, dtype=np.float32))
-        np.testing.assert_array_equal(out, np.zeros(3, dtype=np.float32))
-
-    def test_translation_matches_negated_upstream_camera(self):
-        """The returned translation must equal ``-(upstream camera_world)``
-        so that ``v_PLY + translation`` puts the dancer in a frame where
-        the shared camera is at the world origin.
-
-        ``upstream_camera_world = (-cam_t.x, cam_t.y, cam_t.z)`` (per
-        SAM-Body4D's :class:`Renderer`); ``-upstream`` is exactly
-        ``(cam_t.x, -cam_t.y, -cam_t.z)``.
-        """
-        cam_t = np.array([0.7, 1.2, 4.5], dtype=np.float32)
-        upstream_camera_world = np.array([-cam_t[0], cam_t[1], cam_t[2]], dtype=np.float32)
-        np.testing.assert_allclose(
-            body4d_dancer_world_pos(cam_t),
-            -upstream_camera_world,
-        )
+    def test_rejects_wrong_shape(self):
+        with pytest.raises(ValueError):
+            upstream_ply_centroid(np.zeros(2, dtype=np.float32))
+        with pytest.raises(ValueError):
+            upstream_ply_centroid(np.zeros((1, 3), dtype=np.float32))
 
 
 # ---------------------------------------------------------------------------
