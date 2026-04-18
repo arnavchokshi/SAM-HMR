@@ -299,6 +299,136 @@ correct on this box; produced a working env on the first try.
 
 ### Next actions
 
-Proceed to plan Task 6 (clone SAM-Body4D, create `body4d` conda env,
-run bundled Gradio demo on a single image to confirm SAM-3-Body works
-on the box).
+Proceed to plan Task 6 (PromptHMR SAM-2 mask sidecar — `threed/sidecar_promthmr/build_masks.py`).
+Plan Task 8 is the SAM-Body4D env install (came after Task 7 in the plan).
+
+---
+
+## 2026-04-18 — Plan Task 6 complete (PromptHMR SAM-2 mask sidecar)
+
+### Source-of-truth deviation (recorded in plan §11 too)
+
+Plan Task 6's original commit message put the sidecar inside the
+PromptHMR clone (`PromptHMR/scripts/build_masks_from_bboxes.py`).
+We instead implemented it inside our own repo at
+`threed/sidecar_promthmr/build_masks.py`, for three reasons:
+
+1. The PromptHMR clone is a vendored upstream repo on the box; keeping
+   the sidecar in `SAM-HMR` lets it move with our git history and
+   makes it `pytest`-coverable from the host repo.
+2. The plan-level instruction "modify upstream PromptHMR" inflates the
+   diff against `yufu-wang/main` and complicates future rebases.
+3. The sidecar imports from `pipeline.detector.sam2_video_predictor`
+   (PromptHMR's modified SAM-2 fork) by injecting `~/code/PromptHMR`
+   into `sys.path` at runtime, so the *behaviour* is identical — only
+   the on-disk location differs.
+
+Plan-correction commit `75751ce` (`docs(plan): relocate SAM-2 mask
+sidecar into our repo + use sam2_hiera_tiny.pt`) records this and
+also bumps the default SAM-2 checkpoint to `sam2_hiera_tiny.pt` (the
+smallest variant; PromptHMR's `fetch_data.sh` ships all three sizes).
+
+### Implementation (TDD — red → green → refactor → green)
+
+- **`threed/sidecar_promthmr/__init__.py`** — package marker.
+- **`threed/sidecar_promthmr/build_masks.py`** — main entry. Public
+  helpers (each with a unit test): `davis_palette`,
+  `resolve_default_sam2_paths`, `valid_frames_set`,
+  `assemble_palette_canvas`, `compute_union`, `inject_prompthmr_path`,
+  `chdir_to_prompthmr`, `hydra_absolute_config_name`,
+  `load_video_frames_bgr`. Internal: `_build_predictor`,
+  `_propagate_with_predictor`, `_write_per_track_pngs`,
+  `_write_palette_pngs`, `main`.
+- **`tests/threed/test_sidecar_promthmr_build_masks.py`** — 22 GPU-free
+  unit tests covering every helper. Box-side smoke test exercises the
+  GPU path end-to-end on `adiTest`.
+
+### Three runtime errors caught + fixed (each with regression test)
+
+1. **`ModuleNotFoundError: No module named 'hmr4d'`.** PromptHMR's
+   `pipeline.phmr_vid:7` does
+   `sys.path.insert(0, 'pipeline/gvhmr')` — a *relative* path that
+   only resolves when CWD is the PromptHMR root. Importing
+   `pipeline.detector.sam2_video_predictor` (which transitively imports
+   `pipeline.phmr_vid` via `pipeline/__init__.py`) blew up from any
+   other CWD. Fix: `chdir_to_prompthmr` switches CWD to the PromptHMR
+   root before the import, after the helpers have already absolutised
+   every input path. Commit `9811b08`. Test:
+   `TestChdirToPromptHmr::test_chdir_required_for_pipeline_gvhmr_relative_path`.
+2. **`hydra.errors.MissingConfigException: Cannot find primary config
+   'pipeline/sam2/sam2_hiera_t.yaml'`.** Hydra's `compose()` resolves
+   non-absolute config names against the registered search paths,
+   which include `pkg://sam2` (the upstream sam2 package). PromptHMR
+   ships a *modified* `sam2_hiera_t.yaml` under
+   `PromptHMR/pipeline/sam2/` (different `feat_sizes` for the custom
+   `SAM2VideoPredictor` subclass) — Hydra silently picked the upstream
+   one. Fix: build a Hydra-absolute config name (`'/' + abspath(cfg)`),
+   the same trick PromptHMR's own `pipeline/tools.py:241` uses. Commit
+   `aea669e`. Test:
+   `TestHydraAbsoluteConfigName::test_double_slash_prefix_with_absolute_filesystem_path`.
+3. **`TypeError: SAM2VideoPredictor.init_state() missing 1 required
+   positional argument: 'video_frames'`.** PromptHMR's modified
+   `init_state` (`pipeline/detector/sam2_video_predictor.py:78`)
+   replaced upstream's `video_path` argument with a stacked
+   `video_frames` numpy array (it does
+   `video_frames.shape[1:3]`). The in-class `_load_img_as_tensor`
+   accepts BGR uint8 numpy frames without channel-swap. Fix: add
+   `load_video_frames_bgr(frames_dir)` which returns
+   `(N, H, W, 3) uint8`. Commit `761cf27`. Tests: 4 cases under
+   `TestLoadVideoFramesBgr`.
+
+### Smoke test on `adiTest` intermediates
+
+Wrapper `~/work/run_task6_smoke.sh` (uses inner exit-code capture —
+fixes the `set -e` wrapper bug from Task 5). Run inside `arnav-3d`
+tmux. Highlights from `~/work/logs/task6_smoke.log` (HEAD `761cf27`):
+
+```
+[build_masks] 188 frames @ 1280x720, 5 tids,
+              sam2 ckpt=sam2_hiera_tiny.pt, cfg=pipeline/sam2/sam2_hiera_t.yaml
+Loaded checkpoint sucessfully
+[build_masks] wrote 940 per-tid PNGs, 188 palette PNGs,
+              union shape=(188, 720, 1280) sum=10026161
+build_masks exit=0
+```
+
+| Metric | Value |
+| --- | --- |
+| Wall time | 28 s |
+| Peak VRAM (sam2 hiera_tiny) | <1 GB (under nvidia-smi sample resolution) |
+| Per-tid PNGs | 940 (= 5 tids × 188 frames) |
+| Palette PNGs (P-mode, DAVIS palette) | 188 (verified via PIL: `mode='P'`, indices `[0,1,2,3,4,5]`) |
+| Union mask | `(188, 720, 1280) bool`, total True pixels 10 026 161 |
+
+PIL spot-check confirmed the palette PNG is true 8-bit indexed mode
+(OpenCV `imread` upgrades P-mode PNGs to RGB so `cv2.imread` reports
+the resolved colour values, not the underlying tids — use PIL when
+you need the indices).
+
+### VRAM peaks observed during Task 6
+
+| Stage | Peak VRAM | Notes |
+| --- | --- | --- |
+| sam2 hiera_tiny init + propagate (188 frames, 5 tids) | <1 GB | Reported as 0 MiB at end-of-job by `nvidia-smi --query-gpu=memory.used` (sampled too late); peak during prop is still well under 4 GB based on the model size + frame batch. |
+
+### Commits this session (Task 6)
+
+- `75751ce` — `docs(plan): relocate SAM-2 mask sidecar into our repo + use sam2_hiera_tiny.pt`
+- `90765eb` — `[Plan Task 6] sidecar masks: scaffold + 15 unit tests (red → green)`
+- `9811b08` — `[Plan Task 6] sidecar masks: chdir to PromptHMR root before SAM-2 import (fixes hmr4d ModuleNotFoundError)`
+- `aea669e` — `[Plan Task 6] sidecar masks: pass Hydra-absolute config name (fixes MissingConfigException)`
+- `761cf27` — `[Plan Task 6] sidecar masks: stack frames into video_frames numpy array`
+- (pending) `log: Task 6 complete (PromptHMR SAM-2 mask sidecar)`
+
+### Open questions for the user
+
+- (none — all blockers resolved)
+
+### Next actions
+
+Proceed to plan Task 7 (PromptHMR-Vid sidecar runner —
+`threed/sidecar_promthmr/run_promthmr_vid.py`). This is also where we
+finally swap the hardcoded checkpoint path in
+`PromptHMR/pipeline/phmr_vid.py:22` from the bundled
+`prhmr_release_002.ckpt` to the BEDLAM2-trained
+`phmr_b1b2.ckpt` (per plan-correction commit `8c9232e`).

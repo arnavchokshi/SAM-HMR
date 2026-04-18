@@ -2669,7 +2669,7 @@ These are quick checks the human operator should do once before Task 1:
 | 2026-04-18 | rsync cached body_models from Mac (replaces `fetch_smplx.sh`) | OK — 3.37 GB (smpl/{NEUTRAL,MALE,FEMALE}.pkl + smplx/{NEUTRAL,MALE,FEMALE}.{pkl,npz} + helpers); slim npz pulled separately via `gdown 1v9Qy7…` |
 | 2026-04-18 | run `fetch_data.sh` + BEDLAM2 ckpt (Task 5 step 3) | OK — phmr/, phmr_vid/, sam2_ckpts/, sam_vit_h_4b8939.pth (2.4G), vitpose-h-coco_25.pth (2.4G), camcalib_sa_biased_l2.ckpt (288M), droidcalib.pth (16M), examples/{boxing,boxing_short,dance_1,dance_2}.mp4 — 5.1 GB total in 4.5 min |
 | 2026-04-18 | run `boxing_short.mp4` demo (Task 5 step 4 — milestone gate A) | OK — `results/boxing_short/{results.pkl 401K, world4d.mcs 44K, world4d.glb 66M, subject-{1,2}.smpl}` produced; 50 frames, 2 boxers, ~4 min wall, peak VRAM 11.8 GB |
-| 2026-04-18 | Task 6 — PromptHMR mask sidecar | |
+| 2026-04-18 | Task 6 — PromptHMR mask sidecar | OK — `threed/sidecar_promthmr/build_masks.py` + 22 unit tests; adiTest smoke: 188 frames × 5 tids → 940 per-tid PNGs, 188 palette PNGs (P-mode, indices 0–5), `masks_union.npy (188,720,1280) bool sum=10026161`; 28 s wall, peak VRAM <1 GB (sam2 hiera_tiny). Commits `90765eb`, `9811b08`, `aea669e`, `761cf27`. |
 | 2026-04-18 | Task 7 — PromptHMR-Vid sidecar | |
 | 2026-04-18 | Task 8 — `body4d` env + Gradio demo (milestone gate B) | |
 | 2026-04-18 | accept HF gate (`facebook/sam-3d-body-dinov3` only — SAM-3 skipped) | |
