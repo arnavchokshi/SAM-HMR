@@ -1,0 +1,23 @@
+# Derived image that adds the Tracker-A Python deps on top of prompthmr-dance:latest.
+# Used by eval/run_a_bench_overlay.py only; the base image is unchanged.
+#
+# Tracker B (CAMELTrack) is intentionally NOT installed here. CAMELTrack drags in
+# the `tracklab` framework + a custom torchreid fork that is only on git
+# (not PyPI), and its wrapper in tracking/tracker_b_cameltrack.py was built
+# against a phantom API (CAMELTracker.from_pretrained(...) / trk.tlbr) that
+# does not match the upstream cameltrack.cameltrack.CAMELTrack class.
+# Re-enabling B requires the wrapper rewrite scoped in HANDOFF Shift 10-B.
+#
+# Tracker C (SAM 2.1) needs the `sam2` python package, which lacks aarch64
+# wheels. Out of scope here.
+#
+# Strict failure mode: NO `|| true` so a bad pip install fails the build loud.
+FROM prompthmr-dance:latest
+
+RUN pip install --no-cache-dir \
+        "boxmot>=10.0.83" \
+        "lap>=0.5.12" \
+        "motmetrics>=1.4"
+RUN pip cache purge || true
+
+CMD ["bash"]

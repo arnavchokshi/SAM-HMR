@@ -1,0 +1,26 @@
+# Tracking-only dependency set.
+# Targets Python 3.11+ on macOS (mps), CUDA 12.x on NVIDIA Hopper, or CPU.
+# torch / torchvision are installed by the platform-specific instructions
+# (Apple ships them via pip; on the GH200 they come from the NGC PyTorch
+# container or `pip install torch --index-url https://download.pytorch.org/whl/cu124`).
+
+# Detection + tracking
+ultralytics>=8.4.37,<9
+boxmot>=10.0.52
+lap>=0.5.12
+
+# Numerics / vision
+numpy>=1.26,<3
+scipy>=1.11
+opencv-python-headless>=4.9,<4.11
+imageio>=2.34
+imageio-ffmpeg>=0.5
+ffmpeg-python>=0.2.0
+
+# IO / misc
+PyYAML>=6.0
+tqdm>=4.66
+requests>=2.31
+
+# MOT scoring (eval/regt/score_8clip.py)
+motmetrics>=1.4

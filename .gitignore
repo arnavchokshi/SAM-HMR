@@ -1,0 +1,29 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Run outputs (large; reproducible from data + scripts)
+runs/
+
+# Weights / model checkpoints (large; fetched via scripts/fetch_*.sh)
+weights/
+data/pretrain/
+
+# Shift 7 — HaMeR per-track hand recovery
+# Cloned at runtime on the GH200; do not commit (~3 GB w/ submodules).
+third_party/hamer/
+# HaMeR demo bundle + MANO_RIGHT.pkl (license-gated); fetched by scripts/fetch_hamer_weights.sh
+data/pretrain/hamer/
