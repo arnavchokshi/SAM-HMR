@@ -149,19 +149,42 @@ def chdir_to_prompthmr(prompthmr_path: Path) -> Path:
     return previous
 
 
+def hydra_absolute_config_name(prompthmr_path: Path, cfg_relpath: str) -> str:
+    """Convert a PromptHMR-relative config path into Hydra's '//abs/path' form.
+
+    Hydra's ``compose(config_name=…)`` looks up names in its search path
+    (``pkg://sam2`` by default — the installed sam2 package, NOT PromptHMR's
+    local ``pipeline/sam2/`` directory). PromptHMR's local
+    ``pipeline/sam2/sam2_hiera_t.yaml`` differs from the upstream sam2
+    package's ``sam2_hiera_t.yaml`` (e.g. feat_sizes [32,32] vs [64,64])
+    and the local config is required for PromptHMR's custom
+    SAM2VideoPredictor subclass to load cleanly.
+
+    The trick (lifted verbatim from ``pipeline/tools.py``) is to pass
+    ``'/' + os.path.abspath(cfg_relpath)`` — the leading double slash
+    makes Hydra treat the rest as a filesystem-absolute path instead of
+    a search-path lookup.
+    """
+    abs_cfg = os.path.abspath(prompthmr_path / cfg_relpath)
+    return "/" + abs_cfg
+
+
 def _build_predictor(prompthmr_path: Path, ckpt: Path, cfg: str):
     """Construct the SAM-2 video predictor (GPU).
 
     Side-effects: sys.path is mutated; cwd is changed to ``prompthmr_path``.
     Caller is responsible for resolving every other path argument to an
-    absolute path before calling this.
+    absolute path before calling this. ``cfg`` is the PromptHMR-relative
+    config path (e.g. ``pipeline/sam2/sam2_hiera_t.yaml``); it is converted
+    to Hydra's absolute-path form internally.
     """
     inject_prompthmr_path(prompthmr_path)
     chdir_to_prompthmr(prompthmr_path)
+    abs_cfg = hydra_absolute_config_name(prompthmr_path, cfg)
     from pipeline.detector.sam2_video_predictor import (
         build_sam2_video_predictor,
     )
-    return build_sam2_video_predictor(cfg, str(ckpt))
+    return build_sam2_video_predictor(abs_cfg, str(ckpt))
 
 
 def _propagate_with_predictor(

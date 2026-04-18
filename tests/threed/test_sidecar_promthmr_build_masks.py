@@ -16,6 +16,7 @@ from threed.sidecar_promthmr.build_masks import (
     chdir_to_prompthmr,
     compute_union,
     davis_palette,
+    hydra_absolute_config_name,
     inject_prompthmr_path,
     resolve_default_sam2_paths,
     valid_frames_set,
@@ -172,3 +173,20 @@ class TestChdirToPromptHmr:
             assert relative == (tmp_path / "pipeline" / "gvhmr").resolve()
         finally:
             os.chdir(original)
+
+
+class TestHydraAbsoluteConfigName:
+    def test_double_slash_prefix_with_absolute_filesystem_path(self, tmp_path):
+        """Regression for the 2026-04-18 hydra MissingConfigException.
+
+        The leading ``/`` plus an absolute filesystem path is the literal
+        marker Hydra uses to bypass its search path. Without it Hydra
+        would look up ``pipeline/sam2/sam2_hiera_t.yaml`` in
+        ``pkg://sam2`` (the upstream sam2 package) and miss PromptHMR's
+        local override entirely.
+        """
+        result = hydra_absolute_config_name(tmp_path, "pipeline/sam2/sam2_hiera_t.yaml")
+        assert result.startswith("//")  # leading '/' + abspath that itself starts with '/'
+        assert result.endswith("/pipeline/sam2/sam2_hiera_t.yaml")
+        # The substring after the leading '/' must round-trip as a real abs path
+        assert result[1:].startswith(str(tmp_path.resolve()))
