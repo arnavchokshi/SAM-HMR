@@ -181,36 +181,44 @@ def _smplx_verts_per_dancer(
     *,
     device: str,
 ) -> np.ndarray:
-    """Run smplx forward (rotmat path) for one dancer; return ``(T, V, 3)`` verts.
+    """Run smplx forward for one dancer; return ``(T, V, 3)`` verts in cam frame.
 
-    Mirrors ``pipeline.world.world_hps_estimation`` minus the gravity
-    transform — we want the meshes in the camera frame, which is what
-    ``smplx_cam`` already encodes (rotmat global_orient + per-frame
-    trans relative to the camera origin).
+    Mirrors the working pattern in
+    ``threed.sidecar_promthmr.run_promthmr_vid._extract_smplx_body_joints_world``
+    (and ``pipeline.world.world_hps_estimation`` upstream) — convert
+    the on-disk rotation matrices to axis-angle (165 = 55*3) and feed
+    smplx in the axis-angle path, with zeros for jaw/leye/reye/expression
+    (face joints don't change the body mesh appreciably).
+
+    We ran into a smplx ``pose2rot=False`` shape-validation error trying
+    to feed (B, J, 3, 3) rotation matrices straight in, so the
+    axis-angle round-trip is the safer of the two paths and matches the
+    code we already have in production.
     """
     import torch
 
-    rotmat = torch.as_tensor(smplx_cam["rotmat"], dtype=torch.float32, device=device)
+    rotmat = np.asarray(smplx_cam["rotmat"], dtype=np.float32)
+    pose_aa_np = pose_axis_angle_from_rotmat(rotmat)
+    pose_aa = torch.as_tensor(pose_aa_np, dtype=torch.float32, device=device)
     shape = torch.as_tensor(smplx_cam["shape"], dtype=torch.float32, device=device)
     trans = torch.as_tensor(smplx_cam["trans"], dtype=torch.float32, device=device)
-    B = rotmat.shape[0]
+    B = pose_aa.shape[0]
     if shape.shape[1] > smplx_model.num_betas:
         shape = shape[:, : smplx_model.num_betas]
     mean_shape = shape.mean(dim=0, keepdim=True).repeat(B, 1)
-    zeros3 = torch.zeros(B, 3, dtype=rotmat.dtype, device=device)
+    zeros3 = torch.zeros(B, 3, dtype=pose_aa.dtype, device=device)
     with torch.no_grad():
         out = smplx_model(
-            global_orient=rotmat[:, 0:1],
-            body_pose=rotmat[:, 1:22],
-            left_hand_pose=rotmat[:, 25:40],
-            right_hand_pose=rotmat[:, 40:55],
-            jaw_pose=rotmat[:, 22:23],
-            leye_pose=rotmat[:, 23:24],
-            reye_pose=rotmat[:, 24:25],
+            global_orient=pose_aa[:, 0:3],
+            body_pose=pose_aa[:, 3:66],
+            left_hand_pose=pose_aa[:, 75:120],
+            right_hand_pose=pose_aa[:, 120:165],
             betas=mean_shape,
             transl=trans,
-            expression=torch.zeros(B, 10, dtype=rotmat.dtype, device=device),
-            pose2rot=False,
+            jaw_pose=zeros3,
+            leye_pose=zeros3,
+            reye_pose=zeros3,
+            expression=torch.zeros(B, 10, dtype=pose_aa.dtype, device=device),
         )
     return out.vertices.detach().cpu().numpy().astype(np.float32)
 
