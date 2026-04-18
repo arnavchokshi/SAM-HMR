@@ -361,32 +361,56 @@ the cross-clip comparison is interpreted.
 All 6 candidate clips processed end-to-end on Lambda A100 with
 `--max-frames 188 --batch-size 32 --disable-completion`:
 
-| clip      | N | raw MPJPE (m) | **PA-MPJPE (m)** | jitter PHMR | jitter Body4D | foot-skating PHMR (world) | foot-skating Body4D (cam) | reproj-vs-ViTPose (px) |
-|-----------|---|---------------|------------------|-------------|---------------|---------------------------|---------------------------|------------------------|
-| adiTest   | 5 | 9.214         | 0.459            | 0.0447      | 0.0487        | 0.0312                    | 0.0569                    | 10.21                  |
-| 2pplTest  | 3 | 4.514         | **0.213**        | 0.0493      | 0.0761        | 0.0229                    | 0.0460                    | 43.34 (small subjects) |
-| easyTest  | 6 | 11.073        | **0.178**        | 0.0138      | 0.0144        | 0.0048                    | 0.0427                    | 9.57                   |
-| gymTest   | 7 | 14.466        | **1.203 (high)** | 0.0487      | 0.0306        | 0.0226                    | 0.0518                    | 11.93                  |
-| BigTest   | 8 | 12.828        | 0.736            | 0.0317      | 0.0451        | 0.0232                    | 0.0640                    | 12.26                  |
-| loveTest  |14 | 11.521        | 0.385            | 0.0155      | 0.0110        | 0.0131                    | 0.0160                    | 14.51                  |
+| clip      | N | raw MPJPE (m) | **PA-MPJPE (m)** | jitter PHMR (m/f) | jitter Body4D (m/f) | foot-sk PHMR-world (m/f) | foot-sk Body4D-cam (m/f) | reproj PHMR (px) | **reproj Body4D (px)** | winner |
+|-----------|---|---------------|------------------|-------------------|---------------------|--------------------------|--------------------------|------------------|------------------------|--------|
+| adiTest   | 5 | 9.214         | 0.459            | 0.0447            | 0.0487              | 0.0312                   | 0.0569                   | 10.21            | **3.83**               | Body4D 2.7× |
+| 2pplTest  | 3 | 4.514         | **0.213**        | 0.0493            | 0.0761              | 0.0229                   | 0.0460                   | 43.34            | **21.15**              | Body4D 1.5× |
+| easyTest  | 6 | 11.073        | **0.178**        | 0.0138            | 0.0144              | 0.0048                   | 0.0427                   | 9.57             | **2.62**               | Body4D 3.7× |
+| gymTest   | 7 | 14.466        | **1.203 (high)** | 0.0487            | 0.0306              | 0.0226                   | 0.0518                   | **11.76**        | 12.59                  | PHMR 1.05× (tie) |
+| BigTest   | 8 | 12.828        | 0.736            | 0.0317            | 0.0451              | 0.0232                   | 0.0640                   | 12.20            | **4.93**               | Body4D 2.5× |
+| loveTest  |14 | 11.521        | 0.385            | 0.0155            | 0.0110              | 0.0131                   | 0.0160                   | 14.45            | **8.98**               | Body4D 1.6× |
 
-Headlines:
-1. **PA-MPJPE separates a real outlier from the noise.** Raw MPJPE varies
-   by ~3× across clips (4.5-14.5 m) but is dominated by coord-system
-   translation. PA-MPJPE varies by 6× and surfaces gymTest as the only
-   problem clip (1.20 m vs the other 5 in [0.18, 0.74]).
-2. **PHMR is consistently smoother than Body4D** on 4 of 6 clips. The
-   two flips (gymTest, loveTest) stay within ~30%. Body4D's HMR head is
-   per-frame independent, which matches the observed jitter pattern.
-3. **World-frame foot-skating (Followup #2) actually fires.** PHMR-world
+### Headlines (revised after operator pushback)
+
+1. **For visual positioning accuracy (the metric your eyes use), Body4D
+   wins decisively on 5 of 6 clips** by 1.5-3.7×, and gymTest is a
+   ~5% tie. This contradicts the first-pass "PHMR is smoother, so it's
+   better" framing — those metrics measure different things, and image-
+   space accuracy is what the side-by-side video actually shows.
+2. **Smoothness ≠ accuracy.** PHMR has lower 3D jitter (m/frame) and
+   lower 2D pixel jitter on most clips, but Body4D's higher jitter is
+   small in absolute terms (~3-7 px/frame, mostly imperceptible) while
+   its positioning advantage is dominant.
+3. **PA-MPJPE separates a real outlier from the noise.** Raw MPJPE
+   varies by ~3× (4.5-14.5 m) but is dominated by coord-system
+   translation. PA-MPJPE surfaces gymTest as the only problem clip
+   (1.20 m vs the other 5 in [0.18, 0.74]) — and that's also the one
+   clip where PHMR squeaks ahead in 2D reproj, which is consistent with
+   "this clip's 3D fit is shaky for both pipelines, but PHMR's per-
+   dancer noise happens to land closer to ViTPose."
+4. **World-frame foot-skating (Followup #2) actually fires.** PHMR-world
    FS lives in [0.005, 0.031] m/frame across clips. Body4D cam-frame FS
-   sits 1.5-3× higher because there's no floor reference — exactly the
-   discrepancy this followup was designed to expose.
-4. **Reproj-vs-ViTPose (Followup #4)** sanity checks PHMR's 3D against
-   its own 2D detector: 5 of 6 clips in [9.6, 14.5] px, well within
-   "internally consistent" range. 2pplTest's 43 px is a known ViTPose
-   small-subject failure mode (98 keypoints masked across 188 frames),
-   not a pipeline bug.
+   sits 1.5-3× higher because Body4D has no floor reference at all —
+   this is **NOT** a pipeline-quality comparison; it's two different
+   metrics measured in two different reference frames.
+
+### What I got wrong on the first pass (operator log entry)
+
+The first version of this section claimed "PHMR is consistently
+smoother than Body4D" implied PHMR was better at putting people in
+3D space. That's wrong. The reproj-vs-ViTPose metric I cited there
+(10-14 px) was *PHMR-vs-its-own-ViTPose*, a self-consistency check, not
+a cross-pipeline accuracy comparison. The operator was the one
+watching the video and noticed Body4D was visibly more accurate. After
+adding `threed/sidecar_body4d/reproject_vs_vitpose.py` (commit
+`0f2780a`), the actual cross-pipeline numbers landed in the table
+above and confirmed the visual observation.
+
+The lesson: **always measure the metric that matches what an operator
+sees on the screen.** 3D Euclidean error + foot-skating in different
+reference frames are necessary diagnostic metrics but they are not
+sufficient — image-space reproj is the one that ties the numbers back
+to the rendering.
 
 ### How to view the visual report
 - `runs/3d_compare/report.html` (10.7 kB, self-contained, no JS/CDN).

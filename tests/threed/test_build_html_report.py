@@ -54,8 +54,8 @@ def _write_metrics(clip_dir: Path, *, mpjpe_pa_mean: float, foot_skating_world: 
     (clip_dir / "comparison" / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
 
-def _write_reproj(clip_dir: Path, *, mean_px: float):
-    """Write reproj_metrics.json that mirrors the Followup #4 output."""
+def _write_reproj(clip_dir: Path, *, mean_px: float, body4d_mean_px: float = None):
+    """Write reproj_metrics.json that mirrors Followups #4a (PHMR) + #4b (Body4D)."""
     reproj = {
         "schema_version": 1,
         "joint_layout": "COCO-17",
@@ -71,6 +71,9 @@ def _write_reproj(clip_dir: Path, *, mean_px: float):
         "per_joint_mpjpe_phmr_vs_vitpose_px": np.full((3, 17), mean_px).tolist(),
         "mean_mpjpe_phmr_vs_vitpose_px": mean_px,
     }
+    if body4d_mean_px is not None:
+        reproj["mean_mpjpe_body4d_vs_vitpose_px"] = body4d_mean_px
+        reproj["per_joint_mpjpe_body4d_vs_vitpose_px"] = np.full((17,), body4d_mean_px).tolist()
     (clip_dir / "comparison" / "reproj_metrics.json").write_text(json.dumps(reproj, indent=2))
 
 
@@ -127,6 +130,24 @@ class TestSummarizeClip:
         _write_metrics(clip, mpjpe_pa_mean=0.42, foot_skating_world=0.02)
         s = summarize_clip(clip)
         assert s["mean_reproj_mpjpe_phmr_px"] is None
+        assert s["mean_reproj_mpjpe_body4d_px"] is None
+
+    def test_summary_picks_up_body4d_reproj_field(self, tmp_path: Path):
+        clip = tmp_path / "demo"
+        _write_metrics(clip, mpjpe_pa_mean=0.42, foot_skating_world=0.02)
+        _write_reproj(clip, mean_px=12.34, body4d_mean_px=4.56)
+        s = summarize_clip(clip)
+        np.testing.assert_allclose(s["mean_reproj_mpjpe_phmr_px"], 12.34)
+        np.testing.assert_allclose(s["mean_reproj_mpjpe_body4d_px"], 4.56)
+
+    def test_summary_handles_phmr_only_reproj(self, tmp_path: Path):
+        """If only PHMR side ran (no Body4D field yet), Body4D field is None."""
+        clip = tmp_path / "demo"
+        _write_metrics(clip, mpjpe_pa_mean=0.42, foot_skating_world=0.02)
+        _write_reproj(clip, mean_px=12.34)  # no body4d_mean_px
+        s = summarize_clip(clip)
+        np.testing.assert_allclose(s["mean_reproj_mpjpe_phmr_px"], 12.34)
+        assert s["mean_reproj_mpjpe_body4d_px"] is None
 
     def test_handles_missing_world_foot_skating(self, tmp_path: Path):
         """Older clips without world FS should yield None, not crash."""
@@ -182,6 +203,25 @@ class TestBuildHtml:
         html = build_html(rows, root=tmp_path, title="t")
         assert "alpha" in html
         assert "no video" in html.lower() or "missing" in html.lower()
+
+    def test_html_highlights_body4d_winner(self, tmp_path: Path):
+        """When Body4D's pixel error is much lower than PHMR's, mark it as the winner."""
+        _write_metrics(tmp_path / "win_b4d", mpjpe_pa_mean=0.30, foot_skating_world=0.01)
+        _write_reproj(tmp_path / "win_b4d", mean_px=12.0, body4d_mean_px=4.0)
+        _make_video(tmp_path / "win_b4d" / "comparison" / "side_by_side.mp4")
+        rows = aggregate_clip_metrics(tmp_path)
+        html = build_html(rows, root=tmp_path, title="t")
+        assert "Body4D" in html
+        assert "4.00 Body4D" in html or "4.00 px Body4D" in html
+
+    def test_html_highlights_phmr_winner(self, tmp_path: Path):
+        """When PHMR's pixel error is much lower, PHMR is the highlighted winner."""
+        _write_metrics(tmp_path / "win_phmr", mpjpe_pa_mean=0.30, foot_skating_world=0.01)
+        _write_reproj(tmp_path / "win_phmr", mean_px=4.0, body4d_mean_px=12.0)
+        _make_video(tmp_path / "win_phmr" / "comparison" / "side_by_side.mp4")
+        rows = aggregate_clip_metrics(tmp_path)
+        html = build_html(rows, root=tmp_path, title="t")
+        assert "4.00 PHMR" in html or "4.00 px PHMR" in html
 
 
 class TestMainEndToEnd:

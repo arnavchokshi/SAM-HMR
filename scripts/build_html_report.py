@@ -91,15 +91,19 @@ def summarize_clip(clip_dir: Path) -> Dict:
     reproj_path = clip_dir / "comparison" / "reproj_metrics.json"
     if reproj_path.is_file():
         reproj = json.loads(reproj_path.read_text())
-        summary["mean_reproj_mpjpe_phmr_px"] = float(
-            reproj.get("mean_mpjpe_phmr_vs_vitpose_px", float("nan"))
+        phmr_px = reproj.get("mean_mpjpe_phmr_vs_vitpose_px", None)
+        b4d_px = reproj.get("mean_mpjpe_body4d_vs_vitpose_px", None)
+        summary["mean_reproj_mpjpe_phmr_px"] = (
+            float(phmr_px) if phmr_px is not None and np.isfinite(phmr_px) else None
+        )
+        summary["mean_reproj_mpjpe_body4d_px"] = (
+            float(b4d_px) if b4d_px is not None and np.isfinite(b4d_px) else None
         )
         summary["reproj_n_low_conf"] = int(reproj.get("n_low_confidence_keypoints", 0))
         summary["reproj_path"] = "comparison/reproj_metrics.json"
-        if not np.isfinite(summary["mean_reproj_mpjpe_phmr_px"]):
-            summary["mean_reproj_mpjpe_phmr_px"] = None
     else:
         summary["mean_reproj_mpjpe_phmr_px"] = None
+        summary["mean_reproj_mpjpe_body4d_px"] = None
         summary["reproj_n_low_conf"] = None
         summary["reproj_path"] = None
     return summary
@@ -225,6 +229,25 @@ def _pa_class(pa_m: Optional[float]) -> str:
     return "bad"
 
 
+def _winner_cell(phmr: Optional[float], b4d: Optional[float]) -> str:
+    """Format the head-to-head reproj cell with the winner highlighted."""
+    if phmr is None or b4d is None:
+        return f"<td class='num'>{_fmt(phmr, '{:.2f}')}<br><span style='color:#a0aec0'>vs {_fmt(b4d, '{:.2f}')}</span></td>"
+    if phmr < b4d * 0.95:
+        return (
+            f"<td class='num'><b style='color:#2f855a'>{phmr:.2f} PHMR</b><br>"
+            f"<span style='color:#5b6770'>{b4d:.2f} Body4D</span></td>"
+        )
+    if b4d < phmr * 0.95:
+        return (
+            f"<td class='num'><b style='color:#2f855a'>{b4d:.2f} Body4D</b><br>"
+            f"<span style='color:#5b6770'>{phmr:.2f} PHMR</span></td>"
+        )
+    return (
+        f"<td class='num'>{phmr:.2f} PHMR<br>{b4d:.2f} Body4D <span style='color:#a0aec0'>(tied)</span></td>"
+    )
+
+
 def _build_summary_table(rows: List[Dict]) -> str:
     if not rows:
         return "<p>No clips found under root.</p>"
@@ -237,7 +260,7 @@ def _build_summary_table(rows: List[Dict]) -> str:
   <th>Jitter Body4D (m/f)</th>
   <th>Foot-skating PHMR world (m/f)</th>
   <th>Foot-skating Body4D cam (m/f)</th>
-  <th>Reproj MPJPE PHMR vs ViTPose (px)</th>
+  <th>Reproj-vs-ViTPose (px) &mdash; PHMR vs Body4D</th>
 </tr></thead><tbody>"""
     body = []
     for r in rows:
@@ -259,7 +282,7 @@ def _build_summary_table(rows: List[Dict]) -> str:
             f"<td class='num'>{_fmt(r.get('mean_jitter_body4d_m'))}</td>"
             f"<td class='num'>{_fmt(r.get('mean_foot_skating_phmr_world_m'), '{:.4f}')}</td>"
             f"<td class='num'>{_fmt(r.get('mean_foot_skating_body4d_cam_m'), '{:.4f}')}</td>"
-            f"<td class='num'>{_fmt(r.get('mean_reproj_mpjpe_phmr_px'), '{:.2f}')}</td>"
+            f"{_winner_cell(r.get('mean_reproj_mpjpe_phmr_px'), r.get('mean_reproj_mpjpe_body4d_px'))}"
             "</tr>"
         )
     return head + "\n".join(body) + "</tbody></table>"
@@ -278,6 +301,28 @@ def _build_clip_section(r: Dict, root: Path) -> str:
     )
     if not video_abs.is_file():
         video_html = "<div class='placeholder'>(no video — side_by_side.mp4 missing)</div>"
+    phmr_px = r.get('mean_reproj_mpjpe_phmr_px')
+    b4d_px = r.get('mean_reproj_mpjpe_body4d_px')
+    if phmr_px is not None and b4d_px is not None:
+        if phmr_px < b4d_px * 0.95:
+            winner_html = (
+                f"<dd><b style='color:#2f855a'>{phmr_px:.2f} px PHMR</b> &middot; "
+                f"<span style='color:#5b6770'>{b4d_px:.2f} px Body4D</span></dd>"
+            )
+        elif b4d_px < phmr_px * 0.95:
+            winner_html = (
+                f"<dd><b style='color:#2f855a'>{b4d_px:.2f} px Body4D</b> &middot; "
+                f"<span style='color:#5b6770'>{phmr_px:.2f} px PHMR</span></dd>"
+            )
+        else:
+            winner_html = (
+                f"<dd>{phmr_px:.2f} px PHMR &middot; {b4d_px:.2f} px Body4D "
+                f"<span style='color:#a0aec0'>(tied)</span></dd>"
+            )
+    else:
+        winner_html = (
+            f"<dd>{_fmt(phmr_px, '{:.2f}')} px PHMR &middot; {_fmt(b4d_px, '{:.2f}')} px Body4D</dd>"
+        )
     meta = (
         f"<dl>"
         f"<dt>Frames compared</dt><dd>{r['n_frames']}</dd>"
@@ -288,7 +333,7 @@ def _build_clip_section(r: Dict, root: Path) -> str:
         f"<dt>Jitter Body4D</dt><dd>{_fmt(r.get('mean_jitter_body4d_m'))} m/f</dd>"
         f"<dt>Foot-skating PHMR (world)</dt><dd>{_fmt(r.get('mean_foot_skating_phmr_world_m'), '{:.4f}')} m/f</dd>"
         f"<dt>Foot-skating Body4D (cam)</dt><dd>{_fmt(r.get('mean_foot_skating_body4d_cam_m'), '{:.4f}')} m/f</dd>"
-        f"<dt>Reproj MPJPE PHMR vs ViTPose</dt><dd>{_fmt(r.get('mean_reproj_mpjpe_phmr_px'), '{:.2f}')} px</dd>"
+        f"<dt>Reproj-vs-ViTPose</dt>{winner_html}"
         f"</dl>"
     )
     return (
@@ -317,7 +362,7 @@ def build_html(rows: List[Dict], *, root: Path, title: str) -> str:
           f"<li><b>Jitter</b> — mean inter-frame velocity (m/frame); lower = smoother.</li>"
           f"<li><b>Foot-skating PHMR (world)</b> — planted-foot velocity in PHMR's world frame, per-dancer floor calibration; lower = better contact.</li>"
           f"<li><b>Foot-skating Body4D (cam)</b> — same metric in cam frame; higher than PHMR-world because there's no floor reference.</li>"
-          f"<li><b>Reproj MPJPE PHMR vs ViTPose</b> — pixel error of PHMR's reprojected COCO-17 vs the bundled ViTPose 2D (sanity check).</li>"
+          f"<li><b>Reproj-vs-ViTPose (PHMR &amp; Body4D, side-by-side)</b> — pixel error of each pipeline's reprojected COCO-17 vs the bundled ViTPose 2D in the native frame's coordinate system. <i>This is the metric that matches what you see on the side-by-side video.</i> Lower = mesh sits where the camera saw the dancer.</li>"
           f"</ul></section>"
           f"<section class='card'><h2>Per-clip details</h2>{sections}</section>"
           f"</main>"
@@ -350,9 +395,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rows = aggregate_clip_metrics(root)
     print(f"[build_html_report] {len(rows)} clip(s) discovered under {root}")
     for r in rows:
+        phmr = r.get('mean_reproj_mpjpe_phmr_px')
+        b4d = r.get('mean_reproj_mpjpe_body4d_px')
+        winner = ""
+        if phmr is not None and b4d is not None:
+            if phmr < b4d * 0.95:
+                winner = " (PHMR wins)"
+            elif b4d < phmr * 0.95:
+                winner = " (Body4D wins)"
+            else:
+                winner = " (tied)"
         print(
             f"  - {r['name']}: T={r['n_frames']} N={r['n_dancers']} "
-            f"PA={r.get('mean_mpjpe_pa_m')} reproj_px={r.get('mean_reproj_mpjpe_phmr_px')}"
+            f"PA={r.get('mean_mpjpe_pa_m')} "
+            f"reproj_px PHMR={phmr} Body4D={b4d}{winner}"
         )
     html = build_html(rows, root=root, title=args.title)
     args.output.parent.mkdir(parents=True, exist_ok=True)

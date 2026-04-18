@@ -2725,3 +2725,17 @@ Other hand-off corrections recorded in `_agent_log.md`:
   fall back to `--disable-completion` only on OOM, recording VRAM peaks in
   `_agent_log.md`.
 
+### 2026-04-18 — Task 14b (Followup #4 Body4D side, narrative correction)
+
+| What | Result |
+|---|---|
+| Trigger | Operator (after watching side-by-side videos): "SAM-Body4D looks MUCH better with positioning". Direct contradiction with first-pass §8 of REPORT.md. |
+| Diagnosis | The PHMR-vs-ViTPose reproj numbers cited as "PHMR is accurate" were a self-consistency check (PHMR-trained-on-ViTPose vs PHMR-emitted-ViTPose), not a cross-pipeline accuracy comparison. Body4D-vs-ViTPose was deferred citing a frame-mismatch — but Body4D dumps native-space focal+cam_t per (frame, dancer) and ViTPose can be scaled from PHMR's canvas to native. |
+| New module | `threed/sidecar_body4d/reproject_vs_vitpose.py` (4 pure helpers + main, 16 unit tests). Extends the existing `comparison/reproj_metrics.json` with `mean_mpjpe_body4d_vs_vitpose_px` + diagnostics. |
+| 2pplTest fix | First prototype hard-coded 1280x720; 2pplTest is portrait (576x1024 native, 504x896 PHMR canvas), giving 392 px reproj. Adding `scale_vitpose_to_native(canvas_wh=(2*img_center.x, 2*img_center.y), native_wh=read_native_frame_size(frames_full))` -> 21 px. |
+| Cross-clip results | Body4D wins on 5 of 6 clips at image-space accuracy (1.5-3.7×); gymTest is a ~5% tie favoring PHMR. adiTest 3.83 vs 10.21, easyTest 2.62 vs 9.57, BigTest 4.93 vs 12.20, loveTest 8.98 vs 14.45, 2pplTest 21.15 vs 43.34, gymTest 12.59 vs 11.76. |
+| HTML report | `scripts/build_html_report.py` updated to render head-to-head reproj cells with the winner highlighted; +4 unit tests for winner highlighting. Glossary clarifies that this is the metric matching what the operator sees on the video. |
+| Test count | 286 -> **306 passed**, 1 warning. |
+| Lesson | Always measure the metric that ties back to the operator-facing artifact (here: image-space reproj for a side-by-side video deliverable). 3D-Euclidean error and foot-skating in different reference frames are necessary diagnostics but not sufficient; deferring image-space reproj cost a round-trip. |
+| Commits | `0f2780a` feat(threed/sidecar_body4d): add reproject_vs_vitpose for cross-pipeline 2D accuracy + this docs/log update. |
+

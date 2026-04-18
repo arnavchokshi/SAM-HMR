@@ -1792,3 +1792,125 @@ in 931 s wall.
 - Open `runs/3d_compare/report.html` locally (file://) to spot-check.
 - Surface the cross-clip table to the user; defer further followups
   unless asked.
+
+---
+
+## 2026-04-18 — Followup #4 (Body4D side) + correction to cross-clip narrative
+
+### Trigger
+Operator pushback after viewing the side-by-side videos: "I'm watching
+the comparison videos and SAM Body4D looks MUCH better with getting
+people's positioning accurately and I don't see much jitter." Direct
+contradiction with the first version of §8 of the report which claimed
+"PHMR is consistently smoother than Body4D" and used that as a proxy
+for "better".
+
+### Diagnosis
+The first PHMR-vs-ViTPose reproj numbers (10-14 px on most clips) were
+cited as evidence that PHMR was accurate, but that metric is
+*PHMR-vs-its-own-ViTPose-input* — a self-consistency check, not a
+cross-pipeline accuracy comparison. PHMR is trained on ViTPose, so its
+internal pixel error is naturally low; that says nothing about which
+pipeline puts the dancer in the right place visually.
+
+The Body4D side was deferred in the previous round with the rationale
+that PHMR's intrinsics live in resized image space (504×896 portrait)
+while Body4D operates on native (1280×720 landscape, 576×1024 portrait
+for 2pplTest) and there's no shared frame. That was lazy: Body4D dumps
+per-(frame, dancer) `focal_length` + `camera` translation in
+`focal_4d_individual/<pid>/<frame>.json`, and ViTPose can be scaled
+from PHMR's canvas to native via `(native_W / canvas_W, native_H / canvas_H)`.
+
+### Implementation (TDD, RED -> GREEN)
+New module `threed/sidecar_body4d/reproject_vs_vitpose.py` with 4 pure
+helpers + main():
+1. `read_native_frame_size(frames_dir)` — first JPG, returns `(W, H)`;
+   raises `FileNotFoundError` on empty (we'd rather fail loud than
+   silently fall back to a hard-coded resolution).
+2. `load_body4d_focal_cam_t_per_frame(focal_dir, *, pid, n_frames)` —
+   returns `(focals (T,), cam_ts (T, 3))`; missing-pid-dir or missing
+   per-frame JSON yields NaN at that slot.
+3. `body4d_joints_to_image_2d(joints_local, *, focals, cam_ts, cx, cy,
+   joint_index_subset)` — projects MHR70 -> COCO-17 with per-(frame,
+   dancer) intrinsics. NaN focal/cam_t/coord propagates; Z<min_depth
+   yields NaN. Pinhole, no skew, principal point at native (W/2, H/2).
+4. `scale_vitpose_to_native(vit, *, phmr_canvas_wh, native_wh)` —
+   rescales (u, v) from PHMR's canvas to native; preserves NaN and
+   confidence channel.
+
+`main()` extends the existing `comparison/reproj_metrics.json` (so the
+HTML report only needs one file per clip): adds
+`mean_mpjpe_body4d_vs_vitpose_px`, `per_joint_mpjpe_*`,
+`per_dancer_mpjpe_*`, plus diagnostics
+(`body4d_native_image_w/h`, `body4d_phmr_canvas_w/h`,
+`body4d_focal_first_dancer`, `body4d_n_missing_focal_jsons`,
+`body4d_n_low_confidence_keypoints`).
+
+16 unit tests (3 + 3 + 4 + 4 + 2 main): native-size reading (landscape,
+portrait, empty), focal-cam-t loading (dense, missing frame, missing
+pid), 2D projection (simple, negative-Z -> NaN, NaN focal -> NaN,
+joint-subset selection), VP scaling (no-op, portrait upscale, NaN
+preservation, leading dims), main() end-to-end (writes new fields,
+extends pre-existing PHMR file).
+
+### Cross-clip results (the story that matches the videos)
+
+| clip      | N | reproj PHMR (px) | reproj Body4D (px) | winner       |
+|-----------|---|------------------|--------------------|--------------|
+| adiTest   | 5 | 10.21            | 3.83               | Body4D 2.7×  |
+| 2pplTest  | 3 | 43.34            | 21.15              | Body4D 1.5×  |
+| easyTest  | 6 | 9.57             | 2.62               | Body4D 3.7×  |
+| gymTest   | 7 | 11.76            | 12.59              | PHMR 1.05× (~tie) |
+| BigTest   | 8 | 12.20            | 4.93               | Body4D 2.5×  |
+| loveTest  | 14| 14.45            | 8.98               | Body4D 1.6×  |
+
+Body4D wins on 5 of 6 clips at image-space accuracy. The one near-tie
+(gymTest) is also the one clip with PA-MPJPE > 1.0 m, suggesting both
+pipelines are struggling with the camera-dolly + occluded-equipment
+scene; PHMR's per-dancer noise just happens to land closer to ViTPose.
+
+### 2pplTest fix (portrait-canvas scaling)
+First Body4D-vs-ViTPose prototype gave 392 px on 2pplTest only; the
+others looked sane. Diagnosis: 2pplTest is the only portrait video
+(576×1024) and PHMR resizes it to 504×896. The prototype hard-coded
+`img_W, img_H = 1280, 720` for everything, so for 2pplTest the
+projection landed in entirely the wrong half of the canvas. Fix is
+`scale_vitpose_to_native(vit, phmr_canvas_wh=(2*img_center.x, 2*img_center.y),
+native_wh=read_native_frame_size(frames_full))`. Result: 2pplTest 392 ->
+21 px.
+
+### HTML report update
+`scripts/build_html_report.py` updated to read both PHMR and Body4D
+reproj fields, render head-to-head cells with the winner highlighted
+in green (e.g. "**3.83 Body4D** / 10.21 PHMR"), and add a glossary
+note that this is the metric matching what the operator sees. 4 new
+unit tests for winner highlighting (Body4D wins, PHMR wins,
+None-handling).
+
+### Test totals
+- Before: 286 passed, 1 warning
+- After: **306 passed, 1 warning** (+16 reproj_vs_vitpose body4d, +4
+  build_html_report winner highlighting).
+
+### Open questions
+1. Body4D's `focal_length` is consistently lower than PHMR's (e.g. 555
+   vs 1280 on adiTest) — Body4D estimates a wider FOV than PHMR. We
+   don't know which is correct without ground-truth EXIF; both project
+   the dancers well visually because the depth + focal trade off
+   internally.
+2. gymTest stays the outlier across PA-MPJPE *and* reproj. Worth a
+   per-dancer drill-down on a follow-up: visualise per-dancer reproj
+   error overlay on the video.
+
+### Commits this section
+- `0f2780a` feat(threed/sidecar_body4d): add reproject_vs_vitpose for cross-pipeline 2D accuracy
+
+### Lesson learned
+**The metric you cite needs to match the artifact the operator
+inspects.** 3D Euclidean error + foot-skating in different reference
+frames are useful internal diagnostics, but they don't capture
+"does the mesh sit where the camera saw the dancer?". For a
+side-by-side video deliverable, image-space reproj is the
+load-bearing metric. We had all the data to compute it from day one;
+deferring it cost a round-trip with the operator catching the wrong
+narrative.
