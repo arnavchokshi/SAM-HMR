@@ -286,6 +286,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help="Animation frame rate written into the .mcs/.smpl files")
     p.add_argument("--no-post-opt", action="store_true",
                    help="Skip PromptHMR's post optimisation (faster; less polished joints)")
+    p.add_argument("--reuse-results", action="store_true",
+                   help="Skip the heavy SLAM/ViTPose/PromptHMR-Vid path if "
+                        "<output-dir>/results.pkl already exists; useful when "
+                        "iterating on the export tail (joints / .smpl / .mcs)")
     args = p.parse_args(argv)
 
     interm = args.intermediates_dir.expanduser().resolve()
@@ -324,59 +328,64 @@ def main(argv: Sequence[str] | None = None) -> int:
     pipeline.cfg.fps = args.fps
     pipeline.fps = args.fps
 
-    intr = _read_optional_intrinsics(interm)
-    if intr is not None:
-        pipeline.results = {"camera": {
-            "img_focal": float(intr["fx"]),
-            "img_center": np.array([intr["cx"], intr["cy"]], dtype=np.float32),
-        }}
+    cached_results = out_dir / "results.pkl"
+    if args.reuse_results and cached_results.is_file():
+        print(f"[run_promthmr_vid] --reuse-results: loading {cached_results}")
+        pipeline.results = joblib.load(cached_results)
     else:
-        pipeline.results = {"camera": est_camera(images[0])}
+        intr = _read_optional_intrinsics(interm)
+        if intr is not None:
+            pipeline.results = {"camera": {
+                "img_focal": float(intr["fx"]),
+                "img_center": np.array([intr["cx"], intr["cy"]], dtype=np.float32),
+            }}
+        else:
+            pipeline.results = {"camera": est_camera(images[0])}
 
-    pipeline.results.update({
-        "people": tracks,
-        "timings": {},
-        "masks": union,
-        "has_tracks": True,
-        "has_hps_cam": False,
-        "has_hps_world": False,
-        "has_slam": False,
-        "has_hands": False,
-        "has_2d_kpts": False,
-        "has_post_opt": False,
-    })
+        pipeline.results.update({
+            "people": tracks,
+            "timings": {},
+            "masks": union,
+            "has_tracks": True,
+            "has_hps_cam": False,
+            "has_hps_world": False,
+            "has_slam": False,
+            "has_hands": False,
+            "has_2d_kpts": False,
+            "has_post_opt": False,
+        })
 
-    if pipeline.cfg.use_spec_calib:
-        stride = max(1, n_frames // 30)
-        spec = run_cam_calib(
-            pipeline.images,
-            out_folder=str(out_dir / "spec_calib"),
-            save_res=True,
-            stride=stride,
-            method="spec",
-            first_frame_idx=0,
-        )
-        pipeline.results["spec_calib"] = spec
+        if pipeline.cfg.use_spec_calib:
+            stride = max(1, n_frames // 30)
+            spec = run_cam_calib(
+                pipeline.images,
+                out_folder=str(out_dir / "spec_calib"),
+                save_res=True,
+                stride=stride,
+                method="spec",
+                first_frame_idx=0,
+            )
+            pipeline.results["spec_calib"] = spec
 
-    pipeline.camera_motion_estimation(args.static_camera)
-    pipeline.estimate_2d_keypoints()
-    pipeline.hps_estimation()
-    pipeline.world_hps_estimation()
+        pipeline.camera_motion_estimation(args.static_camera)
+        pipeline.estimate_2d_keypoints()
+        pipeline.hps_estimation()
+        pipeline.world_hps_estimation()
 
-    import torch
+        import torch
 
-    def _to_numpy(d):
-        for k, v in d.items():
-            if isinstance(v, dict):
-                _to_numpy(v)
-            elif isinstance(v, torch.Tensor):
-                d[k] = v.detach().cpu().numpy()
-    _to_numpy(pipeline.results)
+        def _to_numpy(d):
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    _to_numpy(v)
+                elif isinstance(v, torch.Tensor):
+                    d[k] = v.detach().cpu().numpy()
+        _to_numpy(pipeline.results)
 
-    if pipeline.cfg.run_post_opt and not args.no_post_opt:
-        pipeline.post_optimization()
+        if pipeline.cfg.run_post_opt and not args.no_post_opt:
+            pipeline.post_optimization()
 
-    joblib.dump(pipeline.results, out_dir / "results.pkl")
+        joblib.dump(pipeline.results, cached_results)
 
     tids_sorted = sorted_tid_list(pipeline.results["people"])
     pipeline.smplx = pipeline.smplx.to("cuda")
