@@ -903,3 +903,137 @@ comparison + report). Three sub-deliverables in our repo:
    the source frames side-by-side (use SAM-Body4D's existing renderer
    since it already does focal-aware projection). Writes
    `comparison/side_by_side.mp4`.
+
+---
+
+## 2026-04-18 — Plan Tasks 11 + 12 complete (milestone gate C)
+
+### Source-of-truth deviations from §11 sub-plan
+1. We chose `threed/compare/` instead of `threed/stage_d/` for the
+   module home (mirrors `threed.sidecar_*` naming and keeps the
+   "stage" label for orchestration only).
+2. PromptHMR side-loads its `joints_world.npy (T,N,22,3)` (already
+   produced by Task 7) and projects world→cam using
+   `Rcw,Tcw` from `results.pkl["camera_world"]`, then reduces
+   SMPL-22 → COCO-17 → `joints_coco17_cam.npy` via
+   `threed/sidecar_promthmr/project_joints.py`. We do NOT re-render
+   meshes for the joint extraction — the per-frame transform is a
+   3-line matmul.
+3. SAM-Body4D side captures MHR70 joints by **monkey-patching
+   `save_mesh_results`** (in `wrapper.py`) so we don't fork the
+   upstream repo. Per-(slot, frame) `.npy` dumps are consolidated
+   into `joints_world.npy (T,N,70,3)` after `on_4d_generation`
+   returns. (Filename is "world" by convention; data is cam-frame
+   like the rest of SAM-Body4D's outputs.) Stage D's
+   `auto_reduce_to_coco17` does the final reduction so the comparison
+   driver consumes a uniform shape.
+4. `compare/metrics.py` ships three metrics from §4.2:
+   `per_joint_jitter` (mean inter-frame velocity in m/frame),
+   `per_joint_mpjpe` (mean per-joint pos error after the two systems
+   align), `foot_skating` (mean velocity for "planted" feet). All
+   NaN-safe via `np.nanmean`. **2D reprojection** is intentionally
+   not in the first cut — it requires per-frame SAM-Body4D camera
+   intrinsics (focal JSONs) and PromptHMR's spec_calib together; it'll
+   land alongside the ViTPose comparison in Task 14's report once
+   we've validated the basic 3D metrics on adiTest.
+5. `compare/render.py` stitches a 2-panel mp4 (PHMR | Body4D) with a
+   10 px gutter. PromptHMR doesn't ship per-frame overlays so we
+   default to either blank or `intermediates/frames/` as a proxy
+   (the Stage D smoke uses `intermediates/frames/`).
+6. **Slot indexing bug fix (commit `e91d5b5`):** the wrapper was
+   originally writing `joints_4d_individual/<id_current[pid]+1>/`
+   which gave dirs `[2,3,4,5,6]` for tids `[1,2,3,4,5]`, off-by-one
+   from upstream's PLY layout `mesh_4d_individual/<pid+1>/`
+   (`[1,2,3,4,5]`). Caught when the joint dirs from the first re-smoke
+   didn't match the mesh dirs; fix uses `pid+1` consistently in both
+   the wrapper and `consolidate_joints_npy` and is locked in by a
+   regression test (`TestMonkeypatchSaveMeshResults
+   .test_writes_one_npy_per_person_using_pid_plus_one`).
+
+### Box state at end of Task 11 + 12
+- `~/work/SAM-HMR @ cc762be` (post-fix orchestrator commit)
+- `~/work/3d_compare/adiTest/`:
+  - `intermediates/` — frames + tracks (Task 4)
+  - `prompthmr/` — `joints_world.npy (188,5,22,3)`,
+    `joints_coco17_cam.npy (188,5,17,3)`, `results.pkl 1.0 GB`,
+    `subject-{1..5}.smpl`, `world4d.{glb 74 MB,mcs}`
+  - `sam_body4d/` — `joints_world.npy (188,5,70,3)`,
+    `joints_4d_individual/{1..5}/<frame:08d>.npy` (188 each, 940 total),
+    940 PLYs + 940 focal JSONs, 188 rendered overlays, 1 4D mp4,
+    `run_summary.json`
+  - `comparison/` — `metrics.json 7.9 KB`, `side_by_side.mp4 3.2 MB`
+- 161 unit tests + 3 skips locally green (`tests/threed/`).
+
+### Stage D smoke metrics (adiTest)
+- PromptHMR-Vid joints (cam-frame, COCO-17): `(188, 5, 17, 3)` float32
+- SAM-Body4D joints (cam-frame, MHR70): `(188, 5, 70, 3)` float32
+- After auto-reduce: both `(188, 5, 17, 3)`
+- `per_joint_mpjpe` (mean across joints): **9.21 m** — large because
+  the two systems' coord systems are not yet aligned in scale/origin.
+  The world→cam projection brings PromptHMR into the camera frame, but
+  SAM-Body4D's MHR70 root + PHMR's SMPL root are not co-aligned.
+  Aligning them is a Task 14 "report" concern (rigid Procrustes).
+- `per_joint_jitter` (mean across joints, m/frame):
+  PromptHMR **0.045** vs SAM-Body4D **0.049** — comparable temporal
+  smoothness; both ~1.4-1.5 m/s at 30 fps which is plausible for
+  freestyle dance.
+- `foot_skating_phmr_m_per_frame`: `[0,0,0,0,0]` — PromptHMR's
+  cam-frame foot height never falls below the 0.05 m threshold (the
+  cam is mounted above the floor), so no foot is "planted" by our
+  default detector. This is a known limitation of the threshold-based
+  foot detector in the cam-frame; for the report we should compute
+  foot-skating in world-frame using the un-projected joints, OR raise
+  the threshold to a clip-specific calibrated value.
+- `foot_skating_body4d`: `[0.06, 0.04, 0.07, 0.05, 0.06]` — non-trivial
+  skating per dancer (~5-7 cm per planted foot). Plausible since
+  SAM-Body4D has no SLAM and per-frame depth from MoGe-2 is noisy.
+
+### Render
+- `side_by_side.mp4`: 188 frames @ 30 fps, **2570×720** (each panel
+  1280×720 + 10 px gutter). Left panel = `intermediates/frames/`
+  (raw video, 896-cap), right panel = SAM-Body4D rendered overlays.
+  PromptHMR-side mesh overlays are not yet wired (PromptHMR-Vid only
+  emits 3D scene viewers `world4d.{mcs,glb}`; baking 2D overlays would
+  require running our own renderer over the per-frame SMPL fits, which
+  is Task 14 territory).
+
+### Orchestrator validation (Task 12)
+- `scripts/run_3d_compare.py --clip adiTest --output-root ~/work/3d_compare
+  --skip-stage-a --skip-phmr --skip-body4d` → `pipeline plan: compare → render`
+- 2.2 s wall, identical `metrics.json` + `side_by_side.mp4` to the
+  per-stage invocations, no manual env-activation required (the
+  orchestrator does `conda run -n <env>` for cross-env stages but
+  this skip-flag combo runs everything in the active body4d env).
+- 15/15 unit tests on the pure builders + plan composer locked in
+  the skip-flag semantics; the GPU-side stages are validated by
+  their per-stage smokes (Tasks 7, 10).
+
+### Architectural decision: monkey-patch over upstream fork
+We considered patching SAM-Body4D's `save_mesh_results` upstream
+(submitting a PR) but chose the wrapper-side monkey-patch because
+(a) we don't want a vendored fork in our repo, (b) the joint dump
+is a sidecar concern (PLY + focal JSONs are still produced by the
+original), and (c) idempotence + sentinel-marking lets us re-apply
+across re-runs without state leakage. The same patch idiom already
+covers `build_sam3_from_config` (Task 9).
+
+### Open questions / followups for Task 14 report
+- Procrustes-align PromptHMR vs SAM-Body4D joints before
+  computing MPJPE so the metric is interpretable (target <50 cm).
+- Compute foot-skating in world-frame for PromptHMR (need the
+  inverse projection) or use a clip-specific threshold.
+- Wire PromptHMR mesh overlays into the side-by-side render
+  (run our own SMPL-X renderer on the per-frame fits from
+  `results.pkl`).
+
+### Commits this session (Tasks 11 + 12)
+- `feat(threed/compare): Stage D harness — joints, metrics, render, run_compare (plan Task 11)` (`dd39c7c`)
+- `fix(sidecar_body4d): use pid+1 (PLY-layout-aligned) slot dirs for joint dumps` (`e91d5b5`)
+- `feat(scripts): run_3d_compare.py — multi-stage end-to-end orchestrator (plan Task 12)` (`cc762be`)
+- (pending) `log: Tasks 11 + 12 complete (Stage D harness + orchestrator — milestone gate C)`
+
+### Next actions
+Proceed to plan Task 13 (end-to-end smoke on adiTest via the
+orchestrator — milestone gate D). Verify the orchestrator can drive
+all five stages including body4d; then tackle Task 14 (loveTest +
+remaining 7 clips + the operator report).
