@@ -165,12 +165,20 @@ def _read_optional_intrinsics(interm: Path) -> dict | None:
     return json.loads(p.read_text())
 
 
-def _load_frames_rgb(frames_dir: Path) -> List[np.ndarray]:
-    """Load JPGs as RGB numpy arrays (PromptHMR's pipeline expects RGB)."""
+def _load_frames_rgb(frames_dir: Path) -> np.ndarray:
+    """Load JPGs as a stacked ``(N, H, W, 3)`` RGB uint8 numpy array.
+
+    PromptHMR's ``load_video_frames`` returns a 4D ndarray (not a list)
+    and several downstream helpers rely on that — e.g.
+    ``run_spec_calib`` does ``isinstance(images, np.ndarray)`` to derive
+    the image size, and a list of arrays falls through both branches
+    leaving ``imgsize`` undefined (UnboundLocalError). Stacking keeps
+    the contract aligned with the upstream Pipeline.
+    """
     paths = sorted(frames_dir.glob("*.jpg"))
     if not paths:
         raise FileNotFoundError(f"no JPG frames under {frames_dir}")
-    return [cv2.imread(str(p))[:, :, ::-1] for p in paths]
+    return np.stack([cv2.imread(str(p))[:, :, ::-1] for p in paths])
 
 
 def _extract_smplx_body_joints_world(
