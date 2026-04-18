@@ -2617,6 +2617,11 @@ These are quick checks the human operator should do once before Task 1:
 
 | Date | Step | Outcome |
 |---|---|---|
+| 2026-04-17 | git init + remote `origin = https://github.com/arnavchokshi/SAM-HMR.git` (no push) + baseline commit | OK (`fd48c2a`) |
+| 2026-04-17 | Task 1 — scaffold `threed/` config + io (with `pyproject.toml` + `conftest.py` plan fixes) | OK — 3/3 tests pass (`2bd5f12`) |
+| 2026-04-17 | Task 2 — extract tracks from cache | OK — 1 new test, 4/4 cumulative (`dfe45ca`) |
+| 2026-04-17 | Task 3 — extract frames at 896 + full | OK — 1 new test, 5/5 cumulative (`c8a7e33`) |
+| 2026-04-17 | Task 4 — Stage A driver (+ smoke test on `adiTest`) | OK — 188 frames + 5 tracks IDs 1-5, mean conf 0.86-0.88 (`f2ce156`) |
 | | clone PromptHMR | |
 | | install `phmr_pt2.4` env | |
 | | run `boxing_short.mp4` demo | |
