@@ -1215,29 +1215,46 @@ Add a paragraph to `docs/3D_DUAL_PIPELINE_PLAN.md` (this file) §11:
 
 ### Task 6: PromptHMR sidecar — SAM-2 mask generation from our bboxes
 
-**Files:**
-- Create: `~/code/PromptHMR/our_pipeline/__init__.py`
-- Create: `~/code/PromptHMR/our_pipeline/build_masks.py`
+**Files (revised 2026-04-18 — see plan-correction commit):**
+- Create: `threed/sidecar_promthmr/__init__.py` (in our SAM-HMR repo)
+- Create: `threed/sidecar_promthmr/build_masks.py` (in our SAM-HMR repo)
+- Create: `tests/threed/test_sidecar_promthmr_build_masks.py`
 
-> The PromptHMR repo is the easiest place to host this code because it
-> already has the right SAM-2 wheels + configs installed. We treat
-> `~/code/PromptHMR/our_pipeline/` as a small per-project module
-> in their tree.
+> Original plan put this in `~/code/PromptHMR/our_pipeline/` (inside the
+> third-party clone). Revised: keep the source of truth in our repo so
+> it goes through normal git/CI, and at runtime inject PromptHMR's
+> `pipeline.*` modules onto `sys.path` via the `PROMPTHMR_PATH`
+> environment variable (default `~/code/PromptHMR`). PromptHMR's bundled
+> SAM-2 weights + configs continue to live where they always did
+> (`<PROMPTHMR_PATH>/data/pretrain/sam2_ckpts/` and
+> `<PROMPTHMR_PATH>/pipeline/sam2/*.yaml`).
+>
+> Default checkpoint changed from `sam2_hiera_large.pt` to
+> `sam2_hiera_tiny.pt`: that is the only SAM-2 weight file
+> `scripts/fetch_data.sh` actually downloads (verified on box). The
+> `_t.yaml` config goes with it. We can opt into `sam2_hiera_large.pt`
+> later by passing `--sam2-checkpoint` + `--sam2-config` if we feel the
+> tiny model is too noisy on dense dance crowds.
 
 - [ ] **Step 1: Implement the SAM-2 mask builder**
 
 ```python
-# ~/code/PromptHMR/our_pipeline/build_masks.py
+# threed/sidecar_promthmr/build_masks.py  (in our SAM-HMR repo)
 """Per-track SAM-2 mask propagation seeded by our DeepOcSort bboxes.
 
 Reads:
     intermediates/frames/             # JPGs at max_height=896
-    intermediates/tracks.pkl          # {tid -> {frames, bboxes, confs}}
+    intermediates/tracks.pkl          # threed.io.save_tracks payload
+                                      # {tid -> {track_id, frames, bboxes,
+                                      #          confs, masks?, detected?}}
 
 Writes:
     intermediates/masks_per_track/{tid}/{frame:08d}.png   # binary 0/255
     intermediates/masks_palette/{frame:08d}.png           # palette PNG, pixel == tid
     intermediates/masks_union.npy                         # (T, H, W) bool
+
+Imports PromptHMR's bundled SAM-2 video predictor by inserting
+$PROMPTHMR_PATH (default ~/code/PromptHMR) at the front of sys.path.
 """
 from __future__ import annotations
 import argparse
@@ -1274,10 +1291,13 @@ DAVIS_PALETTE = _davis_palette()
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--intermediates-dir", type=Path, required=True)
-    p.add_argument("--sam2-checkpoint", type=Path,
-                   default=Path("data/pretrain/sam2_ckpts/sam2_hiera_large.pt"))
+    p.add_argument("--prompthmr-path", type=Path,
+                   default=Path(os.environ.get("PROMPTHMR_PATH",
+                                               "~/code/PromptHMR")).expanduser())
+    p.add_argument("--sam2-checkpoint", type=Path, default=None,
+                   help="Default: <prompthmr-path>/data/pretrain/sam2_ckpts/sam2_hiera_tiny.pt")
     p.add_argument("--sam2-config", type=str,
-                   default="pipeline/sam2/sam2_hiera_l.yaml")
+                   default="pipeline/sam2/sam2_hiera_t.yaml")
     args = p.parse_args(argv)
 
     interm = args.intermediates_dir.expanduser().resolve()
@@ -1374,43 +1394,42 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Smoke test on adiTest**
 
-Sync intermediates to the box where PromptHMR is installed:
+Sync intermediates to the box (or regenerate via `threed.stage_a.run_stage_a`):
 
 ```bash
 rsync -av runs/3d_compare/adiTest/intermediates/ \
-    cuda-box:~/code/PromptHMR/work/3d_compare/adiTest/intermediates/
+    cuda-box:~/work/3d_compare/adiTest/intermediates/
 ```
 
 Then on the CUDA box:
 
 ```bash
-cd ~/code/PromptHMR
+cd ~/code/SAM-HMR
 conda activate phmr_pt2.4
-python -m our_pipeline.build_masks \
-    --intermediates-dir work/3d_compare/adiTest/intermediates
+PROMPTHMR_PATH=~/code/PromptHMR \
+    python -m threed.sidecar_promthmr.build_masks \
+        --intermediates-dir ~/work/3d_compare/adiTest/intermediates
 ```
 
 Verify:
 
 ```bash
-ls work/3d_compare/adiTest/intermediates/masks_per_track/   # 5 tid dirs
-ls work/3d_compare/adiTest/intermediates/masks_palette/ | wc -l   # 188
-python -c "import numpy as np; m = np.load('work/3d_compare/adiTest/intermediates/masks_union.npy'); print(m.shape, m.sum())"
+ls ~/work/3d_compare/adiTest/intermediates/masks_per_track/   # 5 tid dirs
+ls ~/work/3d_compare/adiTest/intermediates/masks_palette/ | wc -l   # 188
+python -c "import numpy as np; m = np.load('${HOME}/work/3d_compare/adiTest/intermediates/masks_union.npy'); print(m.shape, m.sum())"
 ```
 
 Expected: 5 dirs with up to 188 PNGs each, 188 palette PNGs, union
-shape (188, 896, ?) with non-zero sum.
+shape `(188, 896, W)` with non-zero sum.
 
-- [ ] **Step 3: Commit (in the PromptHMR clone)**
+- [ ] **Step 3: Commit (in our SAM-HMR repo)**
 
 ```bash
-cd ~/code/PromptHMR
-git add our_pipeline/build_masks.py
-git commit -m "feat(our_pipeline): SAM-2 mask propagation seeded by DeepOcSort bboxes"
+git add threed/sidecar_promthmr/__init__.py \
+        threed/sidecar_promthmr/build_masks.py \
+        tests/threed/test_sidecar_promthmr_build_masks.py
+git commit -m "feat(threed/sidecar_promthmr): SAM-2 mask propagation seeded by DeepOcSort bboxes"
 ```
-
-(This commit lives in our PromptHMR fork. Optionally push to a private
-branch for reproducibility.)
 
 ---
 
