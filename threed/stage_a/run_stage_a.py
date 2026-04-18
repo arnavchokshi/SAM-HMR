@@ -62,6 +62,7 @@ def main(argv=None) -> int:
         args.cache_dir,
         min_total_frames=args.min_total_frames,
         min_conf=args.min_conf,
+        max_frames=args.max_frames,
     )
     log.info("[%s] %d tracks survived pruning", args.clip, len(tracks))
 
