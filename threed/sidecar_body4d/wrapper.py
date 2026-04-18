@@ -253,6 +253,11 @@ def monkeypatch_save_mesh_results(
     joints_dir = Path(joints_dir)
 
     def _wrapped(outputs, faces, save_dir, focal_dir, image_path, id_current):
+        if outputs:
+            for pid in range(len(outputs)):
+                slot = pid + 1
+                Path(save_dir, str(slot)).mkdir(parents=True, exist_ok=True)
+                Path(focal_dir, str(slot)).mkdir(parents=True, exist_ok=True)
         original(outputs, faces, save_dir, focal_dir, image_path, id_current)
         if not outputs:
             return

@@ -284,6 +284,31 @@ class TestMonkeypatchSaveMeshResults:
         m.save_mesh_results([], None, "/s", "/f", "/00000000.jpg", [])
         assert not joints_dir.exists() or not list(joints_dir.iterdir())
 
+    def test_creates_per_pid_subdirs_under_save_and_focal(self, tmp_path: Path):
+        """Regression: gymTest crashed because upstream save_mesh_results
+        did NOT mkdir ``mesh_4d_individual/<pid+1>/`` before exporting the
+        PLY. Our wrapper must defensively create both ``save_dir/<pid+1>``
+        and ``focal_dir/<pid+1>`` for every pid in ``outputs`` BEFORE the
+        original is invoked, so the original's ``trimesh.export(...)`` and
+        ``open(...)`` calls succeed even when 7+ tracks appear.
+        """
+        m = self._build_fake_module()
+        joints_dir = tmp_path / "joints"
+        save_dir = tmp_path / "mesh_4d_individual"
+        focal_dir = tmp_path / "focal"
+        monkeypatch_save_mesh_results(m, joints_dir)
+        outputs = [
+            {"pred_keypoints_3d": np.zeros((70, 3), dtype=np.float32)}
+            for _ in range(7)
+        ]
+        m.save_mesh_results(
+            outputs, faces=None, save_dir=str(save_dir), focal_dir=str(focal_dir),
+            image_path="/tmp/clip/00000000.jpg", id_current=[0, 1, 2, 3, 4, 5, 6],
+        )
+        for slot in range(1, 8):
+            assert (save_dir / str(slot)).is_dir(), f"missing save subdir {slot}"
+            assert (focal_dir / str(slot)).is_dir(), f"missing focal subdir {slot}"
+
     def test_skips_when_pred_keypoints_3d_missing(self, tmp_path: Path, capsys):
         """If pred_keypoints_3d isn't present, log a warning and skip without crashing.
 
@@ -295,7 +320,7 @@ class TestMonkeypatchSaveMeshResults:
         monkeypatch_save_mesh_results(m, joints_dir)
         m.save_mesh_results(
             [{"pred_vertices": np.zeros((100, 3), dtype=np.float32)}],
-            None, "/s", "/f", "/00000000.jpg", [0],
+            None, str(tmp_path / "s"), str(tmp_path / "f"), "/00000000.jpg", [0],
         )
         captured = capsys.readouterr()
         assert "pred_keypoints_3d" in (captured.out + captured.err)
