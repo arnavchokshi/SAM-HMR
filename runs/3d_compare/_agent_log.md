@@ -773,3 +773,133 @@ SAM-3D-Body MHR regressor (or a vertex-to-joint fallback if the MHR
 exposes one). Outputs land in `runs/3d_compare/<clip>/body4d/` mirroring
 the `prompthmr/` layout from Task 7, with `joints_cam.npy` ready for
 Stage D's pairwise comparison.
+
+---
+
+## 2026-04-18 — Plan Task 10 complete (SAM-Body4D sidecar runner, Stage C2)
+
+### Architecture decision: defer COCO-17 joint extraction to Stage D
+
+Plan §4.1's `sam_body4d/joints_world.npy` and Task 10's nominal
+"extract COCO-17 joints" both end up in Stage D in our implementation.
+Reason: PromptHMR-Vid (Task 7) already produces `joints_world.npy` in
+the SMPL-X 22-joint subset, and SAM-Body4D produces MHR PLY meshes.
+Both need to be reduced to the same COCO-17 convention for pairwise
+comparison; doing the reduction once in Stage D (with the same vertex-
+picking + camera-projection code path) is cleaner than duplicating
+joint-extraction logic across both runners. The Task 10 runner therefore
+emits the *raw* artifacts (PLY meshes + per-frame focals) and Stage D
+owns the COCO-17 reduction. This is a deviation from the plan's
+artifact contract for `sam_body4d/joints_world.npy`, recorded here for
+auditability — Stage D will produce `comparison/joints_cam_body4d.npy`
+and `comparison/joints_cam_prompthmr.npy` together.
+
+### What we wrote (`threed/sidecar_body4d/run_body4d.py`)
+
+A single-file orchestrator (`python -m threed.sidecar_body4d.run_body4d
+--intermediates-dir <…> --output-dir <…>`) that:
+
+1. Validates layout via `wrapper.intermediates_layout_ok`.
+2. Reads `tracks.pkl` → `sorted_tid_list` → `iter_palette_obj_ids` (range guard).
+3. Injects SAM-Body4D's import roots into `sys.path` and `chdir`s into
+   the repo root (necessary because `scripts/offline_app.py` does
+   `from utils import ...` relative to the repo root and would
+   otherwise resolve to `models/diffusion_vas/utils.py`).
+4. Writes a clip-local `_runtime_config.yaml` with our overrides
+   (`--disable-completion`, `--batch-size`) so each run has a pinned,
+   inspectable config that survives debugging cycles.
+5. Symlinks `frames_full/` → `OUTPUT_DIR/images/` and `masks_palette/`
+   → `OUTPUT_DIR/masks/` via `wrapper.link_artifacts_into_workdir`,
+   then re-validates with `workdir_layout_ok`.
+6. Imports `scripts.offline_app`, applies `monkeypatch_sam3` (we never
+   load `sam3.pt`).
+7. Instantiates `OfflineApp(config_path=patched_cfg)`, sets
+   `app.OUTPUT_DIR` and `app.RUNTIME["out_obj_ids"]`, runs
+   `on_4d_generation()` under `torch.autocast("cuda", enabled=False)`,
+   captures init/run timings + peak VRAM via `torch.cuda.max_memory_allocated`.
+8. Counts outputs (PLYs / focal JSONs / rendered / 4D MP4s) and writes
+   `run_summary.json` with full provenance.
+
+### Smoke results (adiTest, 188 frames × 5 dancers)
+
+Configuration: `--disable-completion --batch-size 32`.
+
+| Metric | Value |
+| --- | --- |
+| Wall time | 13 min (init 30 s + on_4d_generation 12 m 27 s) |
+| Peak VRAM (torch.cuda.max_memory_allocated) | **11.1 GB** |
+| Peak VRAM (nvidia-smi 1 Hz sample) | 12.8 GB |
+| PLY meshes | 940 (5 tids × 188 frames, perfect balance) |
+| Focal JSONs | 940 |
+| Rendered overlays (rendered_frames/) | 188 |
+| 4D MP4 (rendered overlay video) | 1 (662 KB, 25 fps) |
+| Total output dir size | 735 MB |
+
+Per-tid breakdown:
+
+```
+tid=1 plys=188 jsons=188
+tid=2 plys=188 jsons=188
+tid=3 plys=188 jsons=188
+tid=4 plys=188 jsons=188
+tid=5 plys=188 jsons=188
+```
+
+Sample focal JSON (`focal_4d_individual/1/00000050.json`):
+
+```json
+{
+    "focal_length": 547.81,
+    "camera": [0.395, 1.578, 3.428]
+}
+```
+
+`focal_length` is in pixels (per SAM-3D-Body's MoGe-2 FOV estimator),
+`camera` is the per-frame `pred_cam_t` in metres (cam-coords). Stage D
+will use these to project MHR vertices back into image space for the
+2D reprojection metric.
+
+### Resource budget validation
+
+The plan §3.5 table from upstream `assets/doc/resources.md` predicted:
+
+| Scenario | Predicted peak VRAM | Observed |
+| --- | --- | --- |
+| 5 dancers, completion off, batch=32 | ~25 GB (extrap) | **12.8 GB** ✓ better |
+| 5 dancers, completion on, batch=32 | 35.2 GB | (not run yet — TODO loveTest) |
+| 5 dancers, completion off, batch=64 | 40.9 GB | (would risk OOM — chose 32) |
+
+We have **substantially more headroom** than the upstream table
+suggested — likely because adiTest is 1280×720 not 1920×1080. For the
+final loveTest run with 15 dancers we will need to test
+`completion=true, batch=16, per-track-batch ≤5` to stay below 40 GB
+(plan §3.5 mitigation #1).
+
+### Commits this session (Task 10)
+
+- `feat(threed/sidecar_body4d): Stage C2 runner (plan Task 10)` (`80d7807`)
+- (pending) `log: Task 10 complete (SAM-Body4D sidecar runner — Stage C2)`
+
+### Open questions for the user
+
+- (none — runner is validated end-to-end on adiTest; Stage D is the
+  next blocker check)
+
+### Next actions
+
+Proceed to plan Task 11 (Stage D — joint extraction + side-by-side
+comparison + report). Three sub-deliverables in our repo:
+
+1. `threed/stage_d/extract_joints.py` — load PLY + focal per (tid, frame)
+   from SAM-Body4D outputs and SMPL parameters from PromptHMR
+   `results.pkl`, reduce both to COCO-17 in cam-coords. Writes
+   `comparison/joints_cam_{prompthmr,body4d}.npy`.
+2. `threed/stage_d/compute_metrics.py` — pairwise per-frame distance
+   between the two outputs (PMPJPE-style after rigid alignment),
+   per-joint temporal jitter (cm/frame), 2D reprojection error vs the
+   bundled ViTPose 17-keypoint output (Task 5). Writes
+   `comparison/metrics.json` and trajectory plots.
+3. `threed/stage_d/render_side_by_side.py` — overlay both meshes onto
+   the source frames side-by-side (use SAM-Body4D's existing renderer
+   since it already does focal-aware projection). Writes
+   `comparison/side_by_side.mp4`.
