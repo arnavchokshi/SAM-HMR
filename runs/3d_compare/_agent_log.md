@@ -1278,3 +1278,118 @@ Followup #1 (Procrustes-aligned MPJPE) has stub tests in
 that's the natural next item. Until then the headline MPJPE in
 REPORT.md remains 9.21 m and is dominated by global scale/origin
 misalignment between the two coord systems.
+
+---
+
+## 2026-04-18 — Followup #1 (Procrustes MPJPE) + Stage A cap + 5-clip batch launch
+
+### Followup #1 — `align_procrustes` + `per_joint_mpjpe_pa` (commit `f7b70fa`)
+
+Added two pure-NumPy helpers to `threed/compare/metrics.py`:
+
+* `_procrustes_fit(a, b, *, allow_scale=False)` — Kabsch with optional
+  Umeyama scale extension. Returns `(R, t, s)` such that
+  `s * R @ b + t ≈ a` minimises Frobenius. Returns `None` when fewer
+  than 3 finite point pairs are available (degenerate fit).
+* `_apply_transform(b, R, t, s)` — applies the transform to a `(...,3)`
+  array, preserving NaNs row-by-row.
+* `align_procrustes(a, b, *, per_dancer=True, allow_scale=False)` —
+  per-dancer or global rigid alignment of `b` onto `a`. For
+  `per_dancer=True` each dancer's frames over time are co-fit
+  jointly, then the same transform is applied to every frame of that
+  dancer (rigid in space, no per-frame retargeting). NaN frames are
+  excluded from the fit but kept as NaN in the output.
+* `per_joint_mpjpe_pa(a, b, ...)` — wraps `align_procrustes` then
+  reuses `per_joint_mpjpe`.
+
+Wired `per_joint_mpjpe_pa(a, b, per_dancer=True, allow_scale=False)`
+into `threed/compare/run_compare.py:main()` so `metrics.json` now
+includes:
+
+```json
+"per_joint_mpjpe_pa_m": [<17 floats>, ...]
+```
+
+alongside the existing `per_joint_mpjpe_m`.
+
+### Source-of-truth deviation
+Initial test draft asserted per-joint `pa <= raw` for every joint —
+that's wrong because Procrustes minimises the *aggregate* squared
+error, not each joint individually. Some individual joint errors can
+locally increase even as the mean drops. Test was loosened to
+`mean(pa) <= mean(raw) + 1e-9`. Recorded inline as a comment in
+`tests/threed/test_compare_metrics.py::TestPerJointMpjpePa`.
+
+### Test totals
+- Before: 188 passed, 3 skipped (carries Followup #3 +27 tests)
+- After:  203 passed, 3 skipped (+12 in
+  `test_compare_metrics.py::TestAlignProcrustes` (9) +
+  `TestPerJointMpjpePa` (3) and 1 in `test_compare_run.py`)
+
+### Stage A `--max-frames` cap (commit `2270833`)
+
+Added optional `max_frames` to `extract_frames` and exposed
+`--max-frames N` on `threed.stage_a.run_stage_a` and
+`scripts/run_3d_compare.py`.
+
+**Motivation.** New clips range from 270 → 1299 frames and 2 → 15
+dancers. Without a cap, loveTest body4d alone would be ~30 min
+(no completion) or ~5 h (completion ON). Capping to 188 frames keeps
+each clip directly comparable with adiTest's existing baseline (188
+frames × 5 dancers @ 12 min wall) and bounds total Phase-4 spend
+to ~120 min on the A100 (~$2 at $1.10/h).
+
+**Trade-off.** We're now reporting metrics on the *first 188 frames*
+of each clip rather than the full content. That's fine for a v1
+cross-clip comparison but should be flagged in the operator report
+once it lands.
+
+### Test totals (after cap)
+- Before: 203 passed, 3 skipped
+- After:  208 passed, 3 skipped (+5 in
+  `test_extract_frames.py` (3) + `test_orchestrator.py::TestStageACmd` (2))
+
+### Box state (pre-batch)
+```
+ssh ubuntu@150.136.209.7 nvidia-smi  →  A100-SXM4-40GB, 0 MiB / 40960 MiB used
+~/work/SAM-HMR @ commit 2270833 (matches local HEAD + origin/main)
+~/work/cache/{2pplTest,easyTest,gymTest,BigTest,loveTest}/*.pkl uploaded (5 files)
+~/work/videos/{2pplTest.mov, IMG_2082.mov, IMG_8309.mov, BigTest.mov, IMG_9265.mov} uploaded
+~/work/run_all_clips.sh in place (driver script)
+tmux session arnav-3d already exists with 6 windows (none active)
+pytest in body4d env: 211 passed, 1 warning (matches Mac's 208+3 skipped, 3 skip-deps installed on box)
+```
+
+### 5-clip batch architecture
+One driver script `~/work/run_all_clips.sh` runs all 5 clips
+sequentially in tmux window `arnav-3d:task14-batch`. Per-clip log
+lands at `~/work/logs/task14_<clip>.log`. The script aborts on the
+first non-zero return code so failures get caught quickly. Each
+clip invokes:
+
+```
+python scripts/run_3d_compare.py \
+    --clip <clip> \
+    --output-root /home/ubuntu/work/3d_compare \
+    --video /home/ubuntu/work/videos/<vid.mov> \
+    --cache-dir /home/ubuntu/work/cache/<clip> \
+    --max-frames 188 \
+    --batch-size 32 \
+    --disable-completion \
+    --fps 30
+```
+
+i.e. matches adiTest's verified baseline exactly, plus the new
+`--max-frames 188` cap. Completion is OFF for the first pass; if
+metrics need to be refined we can selectively re-run the worst
+offenders with completion ON later.
+
+### Open questions / risks
+* loveTest has ~15 tracked dancers; the orchestrator currently
+  passes all of them through PHMR + body4d. If the dancer count blows
+  past `body4d.cfg.sam_3d_body.max_dancers` (~16 by upstream default)
+  we'll see a body4d crash — to be observed live.
+* PHMR-Vid SLAM may reject a static-camera clip (gymTest, easyTest)
+  and we don't pass `--static-camera` in the first pass. If SLAM
+  fails the orchestrator will return non-zero; we'd retry with
+  `--static-camera`.
