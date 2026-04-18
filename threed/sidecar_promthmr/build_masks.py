@@ -133,9 +133,31 @@ def inject_prompthmr_path(prompthmr_path: Path) -> None:
         sys.path.insert(0, p)
 
 
+def chdir_to_prompthmr(prompthmr_path: Path) -> Path:
+    """Chdir to the PromptHMR clone root and return the previous cwd.
+
+    Necessary because PromptHMR's ``pipeline/__init__.py`` transitively imports
+    ``pipeline.phmr_vid`` which does ``sys.path.insert(0, 'pipeline/gvhmr')``
+    — a *relative* path that only resolves to the right place when cwd is the
+    PromptHMR root. Hydra's SAM-2 config lookup
+    (``pipeline/sam2/sam2_hiera_t.yaml``) is also relative.
+
+    Returns the previous cwd so callers can restore it if needed.
+    """
+    previous = Path.cwd()
+    os.chdir(prompthmr_path)
+    return previous
+
+
 def _build_predictor(prompthmr_path: Path, ckpt: Path, cfg: str):
-    """Construct the SAM-2 video predictor (GPU). Side-effect: sys.path mutated."""
+    """Construct the SAM-2 video predictor (GPU).
+
+    Side-effects: sys.path is mutated; cwd is changed to ``prompthmr_path``.
+    Caller is responsible for resolving every other path argument to an
+    absolute path before calling this.
+    """
     inject_prompthmr_path(prompthmr_path)
+    chdir_to_prompthmr(prompthmr_path)
     from pipeline.detector.sam2_video_predictor import (
         build_sam2_video_predictor,
     )
@@ -262,7 +284,11 @@ def main(argv: Optional[list] = None) -> int:
     )
     args = p.parse_args(argv)
 
+    # Resolve every path to absolute BEFORE _build_predictor() does its chdir,
+    # otherwise relative paths (especially intermediates-dir from a non-PromptHMR
+    # cwd) silently get re-rooted under PromptHMR.
     interm = args.intermediates_dir.expanduser().resolve()
+    prompthmr_path = args.prompthmr_path.expanduser().resolve()
     frames_dir = interm / "frames"
     tracks_pkl = interm / "tracks.pkl"
     out_per_tid = interm / "masks_per_track"
@@ -275,9 +301,12 @@ def main(argv: Optional[list] = None) -> int:
         raise SystemExit(f"tracks.pkl not found: {tracks_pkl}")
 
     if args.sam2_checkpoint is None:
-        args.sam2_checkpoint, _ = resolve_default_sam2_paths(args.prompthmr_path)
-    if not args.sam2_checkpoint.is_file():
-        raise SystemExit(f"sam2 checkpoint not found: {args.sam2_checkpoint}")
+        sam2_ckpt, _ = resolve_default_sam2_paths(prompthmr_path)
+    else:
+        sam2_ckpt = args.sam2_checkpoint.expanduser().resolve()
+    sam2_cfg = args.sam2_config
+    if not sam2_ckpt.is_file():
+        raise SystemExit(f"sam2 checkpoint not found: {sam2_ckpt}")
 
     import cv2
 
@@ -289,10 +318,10 @@ def main(argv: Optional[list] = None) -> int:
     H, W = cv2.imread(str(frame_paths[0])).shape[:2]
     print(
         f"[build_masks] {n_frames} frames @ {W}x{H}, {len(tracks)} tids, "
-        f"sam2 ckpt={args.sam2_checkpoint.name}, cfg={args.sam2_config}"
+        f"sam2 ckpt={sam2_ckpt.name}, cfg={sam2_cfg}"
     )
 
-    predictor = _build_predictor(args.prompthmr_path, args.sam2_checkpoint, args.sam2_config)
+    predictor = _build_predictor(prompthmr_path, sam2_ckpt, sam2_cfg)
     per_frame_per_tid = _propagate_with_predictor(predictor, frames_dir, tracks)
 
     vf = valid_frames_set(tracks)

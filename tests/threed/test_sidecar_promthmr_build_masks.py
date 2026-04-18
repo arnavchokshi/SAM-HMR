@@ -5,12 +5,15 @@ propagation path is exercised by the box-side smoke test in plan Task 6
 step 2.
 """
 from __future__ import annotations
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from threed.sidecar_promthmr.build_masks import (
     DAVIS_PALETTE,
     assemble_palette_canvas,
+    chdir_to_prompthmr,
     compute_union,
     davis_palette,
     inject_prompthmr_path,
@@ -137,3 +140,35 @@ class TestInjectPromptHmrPath:
             assert first == second
         finally:
             sys.path[:] = original
+
+
+class TestChdirToPromptHmr:
+    def test_changes_cwd_and_returns_previous(self, tmp_path):
+        import os
+        original = Path.cwd()
+        try:
+            previous = chdir_to_prompthmr(tmp_path)
+            assert previous == original
+            assert Path.cwd() == tmp_path.resolve()
+        finally:
+            os.chdir(original)
+
+    def test_chdir_required_for_pipeline_gvhmr_relative_path(self, tmp_path):
+        """Regression for the 2026-04-18 ModuleNotFoundError: no module 'hmr4d'.
+
+        PromptHMR's ``pipeline.phmr_vid`` does
+        ``sys.path.insert(0, 'pipeline/gvhmr')``. That relative path only
+        resolves when cwd is the PromptHMR root, so this test pins the
+        contract that ``chdir_to_prompthmr`` makes ``Path('pipeline/gvhmr')``
+        resolve under the given root.
+        """
+        import os
+        original = Path.cwd()
+        # Build a fake PromptHMR layout
+        (tmp_path / "pipeline" / "gvhmr").mkdir(parents=True)
+        try:
+            chdir_to_prompthmr(tmp_path)
+            relative = Path("pipeline/gvhmr").resolve()
+            assert relative == (tmp_path / "pipeline" / "gvhmr").resolve()
+        finally:
+            os.chdir(original)
