@@ -130,8 +130,11 @@ the cam in its world frame, Body4D's MHR is rooted near the camera
 origin. The world→cam projection in `project_joints.py` brings PHMR
 into the camera frame but doesn't co-register the two roots. The
 correct readout for "how close are the two estimates" is **MPJPE
-after Procrustes alignment** (rigid R, t per dancer), which we have
-not yet computed — see followup #1.
+after Procrustes alignment** (rigid R, t per dancer), which is now
+computed by `align_procrustes` + `per_joint_mpjpe_pa` and emitted
+to `metrics.json` as `per_joint_mpjpe_pa_m` — see followup #1.
+The PA value will be re-extracted into the table above when the
+clip is re-`compare`d on the box (Phase 8).
 
 **Foot-skating PHMR = 0** — the cam-frame foot height never falls
 below the 0.05 m threshold (camera is mounted above the floor),
@@ -274,8 +277,12 @@ the cross-clip comparison is interpreted.
 1. **Procrustes-aligned MPJPE.** Add a `align_procrustes(joints_a,
    joints_b, per_dancer=True)` helper in `threed/compare/metrics.py`
    and report MPJPE both before and after. Target after-alignment
-   MPJPE: <50 cm for COCO body joints. _(stub tests already drafted
-   in `tests/threed/test_compare_metrics.py`; impl pending.)_
+   MPJPE: <50 cm for COCO body joints. _Done — `align_procrustes` +
+   `per_joint_mpjpe_pa` (Kabsch + optional Umeyama scale) added to
+   `threed/compare/metrics.py`; 12 unit tests cover identity /
+   translation / rotation / per-dancer / scale / NaN / shape errors;
+   `metrics.json` now emits `per_joint_mpjpe_pa_m`. Cross-clip
+   numbers will be re-interpreted in §2._
 2. **World-frame foot-skating.** Compute foot-skating using the
    un-projected world-frame joints from PHMR and a per-clip-calibrated
    ground-plane height, instead of the cam-frame heuristic.
@@ -303,4 +310,4 @@ the cross-clip comparison is interpreted.
 - Upstream pins:
   - PromptHMR HEAD `7d39d3f`
   - SAM-Body4D HEAD `21af102`
-- Tests: `pytest tests/threed/ -q` → 161 passed, 3 skipped, 1 warning
+- Tests: `pytest tests/threed/ -q` → 203 passed, 3 skipped, 1 warning

@@ -42,6 +42,7 @@ from threed.compare.metrics import (
     foot_skating,
     per_joint_jitter,
     per_joint_mpjpe,
+    per_joint_mpjpe_pa,
 )
 
 
@@ -146,6 +147,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "per_joint_jitter_phmr_m_per_frame": per_joint_jitter(a).tolist(),
         "per_joint_jitter_body4d_m_per_frame": per_joint_jitter(b).tolist(),
         "per_joint_mpjpe_m": per_joint_mpjpe(a, b).tolist(),
+        "per_joint_mpjpe_pa_m": per_joint_mpjpe_pa(
+            a, b, per_dancer=True, allow_scale=False
+        ).tolist(),
         "foot_skating_phmr_m_per_frame": foot_skating(
             a, foot_idx=args.foot_idx, threshold=args.foot_threshold
         ).tolist(),

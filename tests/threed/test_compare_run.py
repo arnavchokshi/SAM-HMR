@@ -132,3 +132,35 @@ class TestMainEndToEnd:
         assert m["n_dancers_compared"] == 2
         assert m["n_dancers_phmr"] == 4
         assert m["n_dancers_body4d"] == 2
+
+    def test_emits_pa_mpjpe_field(self, tmp_path):
+        """Followup #1: metrics.json must include Procrustes-aligned MPJPE.
+
+        Constructed input: phmr is at origin, body4d is the same poses
+        translated by a constant offset per dancer. Raw MPJPE ~ |offset|.
+        PA-MPJPE (per-dancer alignment removes the translation) ~ 0.
+        """
+        rng = np.random.default_rng(123)
+        a = rng.standard_normal((30, 2, 17, 3)).astype(np.float32)
+        b = a.copy()
+        b[:, 0] += np.array([3.0, 0.0, 4.0], dtype=np.float32)
+        b[:, 1] += np.array([0.0, 5.0, -12.0], dtype=np.float32)
+        ap = tmp_path / "a.npy"
+        bp = tmp_path / "b.npy"
+        np.save(ap, a)
+        np.save(bp, b)
+        out = tmp_path / "m.json"
+        rc = main([
+            "--prompthmr-joints", str(ap),
+            "--body4d-joints", str(bp),
+            "--output", str(out),
+        ])
+        assert rc == 0
+        m = json.loads(out.read_text())
+        assert "per_joint_mpjpe_pa_m" in m, "PA-MPJPE field missing from metrics.json"
+        raw = np.array(m["per_joint_mpjpe_m"])
+        pa = np.array(m["per_joint_mpjpe_pa_m"])
+        assert raw.shape == (2, 17)
+        assert pa.shape == (2, 17)
+        assert float(raw.mean()) > 5.0
+        assert float(pa.mean()) < 1e-4
