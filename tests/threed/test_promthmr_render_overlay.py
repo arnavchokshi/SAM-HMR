@@ -108,6 +108,28 @@ class TestPoseAxisAngleFromRotmat:
         with pytest.raises(ValueError):
             pose_axis_angle_from_rotmat(np.zeros((1, 1, 4, 3), dtype=np.float32))
 
+    def test_zero_rotmat_falls_back_to_identity(self):
+        """PHMR leaves jaw/leye/reye as zero matrices (det=0); the helper
+        must treat them as identity rather than letting scipy crash."""
+        rotmat = np.zeros((2, 1, 3, 3), dtype=np.float32)
+        aa = pose_axis_angle_from_rotmat(rotmat)
+        np.testing.assert_allclose(aa, 0.0, atol=1e-7)
+
+    def test_mixed_valid_and_zero_rotmats(self):
+        """A 90-deg z-rotation in slot 0 + a zero rotmat in slot 1 -> aa = (0,0,pi/2, 0,0,0)."""
+        theta = np.pi / 2
+        Rz = np.array([
+            [np.cos(theta), -np.sin(theta), 0],
+            [np.sin(theta),  np.cos(theta), 0],
+            [0,              0,             1],
+        ], dtype=np.float32)
+        rotmat = np.zeros((1, 2, 3, 3), dtype=np.float32)
+        rotmat[0, 0] = Rz
+        rotmat[0, 1] = 0.0
+        aa = pose_axis_angle_from_rotmat(rotmat)
+        np.testing.assert_allclose(aa[0, 0:3], [0.0, 0.0, np.pi / 2], atol=1e-6)
+        np.testing.assert_allclose(aa[0, 3:6], 0.0, atol=1e-7)
+
 
 # ---------------------------------------------------------------------------
 # make_intrinsics_K

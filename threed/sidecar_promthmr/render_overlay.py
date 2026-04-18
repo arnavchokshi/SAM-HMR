@@ -94,15 +94,19 @@ def dancer_color_palette(n: int) -> np.ndarray:
 def pose_axis_angle_from_rotmat(rotmat: np.ndarray) -> np.ndarray:
     """Convert ``(B, J, 3, 3)`` rotation matrices to ``(B, J*3)`` axis-angle.
 
-    Uses scipy's Rodrigues conversion (``Rotation.from_matrix``) for
-    numerical robustness; the result is float32 so it can be fed
-    straight into ``smplx.SMPLX.forward(..., pose2rot=False)`` after a
-    reshape (the smplx package accepts either format, but axis-angle
-    is the more natural intermediate representation when the on-disk
-    artefact is a rotation matrix).
+    Uses scipy's Rodrigues conversion for numerical robustness. The
+    result is float32 so it can be sliced straight into the per-part
+    poses smplx expects. Mirrors the
+    ``matrix_to_axis_angle(...).reshape(-1, 55*3)`` line in PromptHMR's
+    :func:`pipeline.world.world_hps_estimation`.
 
-    Mirrors the ``matrix_to_axis_angle(...).reshape(-1, 55*3)`` line in
-    PromptHMR's :func:`pipeline.world.world_hps_estimation`.
+    PromptHMR-Vid leaves face joints (jaw, leye, reye) as zero
+    matrices (det=0) instead of identity. scipy's ``from_matrix``
+    refuses to convert them; we substitute identity (-> zero rotvec)
+    for any rotmat whose determinant is < 1e-3 so the call doesn't
+    blow up. This matches the runtime behaviour upstream uses anyway:
+    every consumer of PHMR's output zeros the face slots before the
+    smplx forward.
     """
     if rotmat.ndim != 4 or rotmat.shape[-2:] != (3, 3):
         raise ValueError(
@@ -111,7 +115,12 @@ def pose_axis_angle_from_rotmat(rotmat: np.ndarray) -> np.ndarray:
     from scipy.spatial.transform import Rotation as Rsp
 
     B, J = rotmat.shape[:2]
-    flat = rotmat.reshape(-1, 3, 3)
+    flat = rotmat.reshape(-1, 3, 3).astype(np.float64)
+    dets = np.linalg.det(flat)
+    bad = dets < 1e-3
+    if bad.any():
+        flat = flat.copy()
+        flat[bad] = np.eye(3)
     rotvec = Rsp.from_matrix(flat).as_rotvec().astype(np.float32)
     return rotvec.reshape(B, J * 3)
 
