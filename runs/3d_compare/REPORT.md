@@ -346,13 +346,13 @@ the cross-clip comparison is interpreted.
 
 ## 7. Reproducibility receipts
 
-- Repo HEAD: [`9038902`](https://github.com/arnavchokshi/SAM-HMR/commit/9038902) on `main`
+- Repo HEAD: [`c5a6fbb`](https://github.com/arnavchokshi/SAM-HMR/commit/c5a6fbb) on `main`
 - Box: Lambda A100-SXM4-40GB, miniforge `body4d` env (py 3.12.13,
   torch 2.7.1+cu118, setuptools 79.0.1)
 - Upstream pins:
   - PromptHMR HEAD `7d39d3f`
   - SAM-Body4D HEAD `21af102`
-- Tests: `pytest tests/threed/ -q` → **286 passed, 1 warning**
+- Tests: `pytest tests/threed/ -q` → **306 passed, 1 warning**
 
 ---
 
@@ -421,10 +421,11 @@ to the rendering.
 - Regenerate at any time with
   `python scripts/build_html_report.py --root runs/3d_compare --output runs/3d_compare/report.html`.
 
-### Status of all 5 followups from §6
+### Status of all 5 followups from §6 (and the bonus #6)
 1. Procrustes-aligned MPJPE — **closed** (commit `f7b70fa`)
-2. World-frame foot-skating — **closed** (commits `915fc5f`, `e8af9bb`)
+2. World-frame foot-skating — **closed** (commits `915fc5f`, `e8af9bb`, `ca9118a`)
 3. PHMR mesh overlays — **closed** (commits `ab711a0`, `8ee06cb`, `9e8e531`)
-4. 2D reprojection vs ViTPose — **closed PHMR side** (commits `f2b1c8e`, `c06c2a4`); Body4D side deferred (intrinsics live in different image space).
-5. HTML report — **closed** (commit `9038902`)
+4. 2D reprojection vs ViTPose — **fully closed** (PHMR side: `f2b1c8e`, `c06c2a4`, `7fa238f`; Body4D side: `0f2780a` + `c5a6fbb` — added 2026-04-18 after operator caught the cross-pipeline gap)
+5. HTML report — **closed** (commits `9038902`, `c5a6fbb` — winner-highlighting added in latest)
+6. Body4D mesh overlays on real video — **closed** (commits `77a700e`, `37a01f8`, `e33572d`, `a3c77bd`)
 
