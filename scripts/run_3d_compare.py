@@ -210,14 +210,22 @@ def build_compare_cmd(
     prompthmr_joints: Path,
     body4d_joints: Path,
     output: Path,
+    prompthmr_world_joints: Optional[Path] = None,
 ) -> List[str]:
-    """Build the Stage D comparison subprocess command (runs in host env)."""
-    return [
+    """Build the Stage D comparison subprocess command (runs in host env).
+
+    When ``prompthmr_world_joints`` is provided, the world-frame
+    foot-skating metric is added to ``metrics.json`` (Followup #2).
+    """
+    cmd = [
         "python", "-m", "threed.compare.run_compare",
         "--prompthmr-joints", str(prompthmr_joints),
         "--body4d-joints", str(body4d_joints),
         "--output", str(output),
     ]
+    if prompthmr_world_joints is not None:
+        cmd += ["--prompthmr-world-joints", str(prompthmr_world_joints)]
+    return cmd
 
 
 def build_render_cmd(
@@ -462,11 +470,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return rc
 
     if "compare" in plan:
+        world_joints_path = dirs.prompthmr / "joints_world.npy"
         rc = _local_run(
             build_compare_cmd(
                 prompthmr_joints=dirs.prompthmr / "joints_coco17_cam.npy",
                 body4d_joints=dirs.sam_body4d / "joints_world.npy",
                 output=dirs.comparison / "metrics.json",
+                prompthmr_world_joints=(
+                    world_joints_path if world_joints_path.is_file() else None
+                ),
             ),
             cwd=REPO_ROOT,
         )

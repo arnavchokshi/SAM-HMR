@@ -201,6 +201,26 @@ class TestCompareCmd:
         )
         assert "threed.compare.run_compare" in cmd
 
+    def test_run_compare_forwards_world_joints(self, orch, fake_dirs):
+        """Followup #2: orchestrator wires PHMR's joints_world.npy through."""
+        cmd = orch.build_compare_cmd(
+            prompthmr_joints=fake_dirs.prompthmr / "joints_coco17_cam.npy",
+            body4d_joints=fake_dirs.sam_body4d / "joints_world.npy",
+            output=fake_dirs.comparison / "metrics.json",
+            prompthmr_world_joints=fake_dirs.prompthmr / "joints_world.npy",
+        )
+        assert "--prompthmr-world-joints" in cmd
+        assert str(fake_dirs.prompthmr / "joints_world.npy") in cmd
+
+    def test_run_compare_omits_world_joints_when_none(self, orch, fake_dirs):
+        cmd = orch.build_compare_cmd(
+            prompthmr_joints=fake_dirs.prompthmr / "joints_coco17_cam.npy",
+            body4d_joints=fake_dirs.sam_body4d / "joints_world.npy",
+            output=fake_dirs.comparison / "metrics.json",
+            prompthmr_world_joints=None,
+        )
+        assert "--prompthmr-world-joints" not in cmd
+
     def test_render(self, orch, fake_dirs):
         cmd = orch.build_render_cmd(
             body4d_frames_dir=fake_dirs.sam_body4d / "rendered_frames",

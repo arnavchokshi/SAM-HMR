@@ -177,6 +177,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "foot_threshold_m": float(args.foot_threshold),
         "face_indices_collapsed_to_smpl_head": [0, 1, 2, 3, 4],
     }
+    if args.prompthmr_world_joints is not None:
+        world = np.load(args.prompthmr_world_joints)
+        print(
+            f"[run_compare] PromptHMR world joints: {world.shape}, "
+            f"dtype={world.dtype}"
+        )
+        if world.shape[-2] != 22:
+            print(
+                f"[run_compare] WARNING world-joints joint axis is {world.shape[-2]} "
+                f"(expected 22 for SMPL-22); proceeding with foot_idx="
+                f"{args.world_foot_idx} as-is"
+            )
+        ws = foot_skating_world_frame(
+            world,
+            foot_idx=args.world_foot_idx,
+            threshold_m=args.world_foot_threshold,
+        ).tolist()
+        metrics["foot_skating_phmr_world_m_per_frame"] = ws
+        metrics["world_foot_idx"] = int(args.world_foot_idx)
+        metrics["world_foot_threshold_m"] = float(args.world_foot_threshold)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(metrics, indent=2, default=_json_default))
     print(f"[run_compare] wrote {args.output}")
